@@ -1,0 +1,38 @@
+Ro-bat bottles avoidance experiment:
+
+1. Position the bottles on the arena 
+2. Switch on Ro-bat
+3. Connect 9V battery
+5. Connect your PC to wifi Cyber-Physical-Systems with Pw: Torweg-Sisal2-Hm
+4. Open SSH connection to the robot:
+	> ssh robat@134.34.226.208
+	> robat@134.34.226.208's password:thymio
+	> conda activate robat
+	> /home/robat/miniforge3/envs/robat/bin/python /home/robat/robat_v2/useful_code/obstacle_avoidance.py
+	
+	ctrl+c to stop it
+	
+
+
+SonoRo experiments:
+
+1. Switch on sonoRos and position them on the arena
+2. Connect your PC to wifi Cyber-Physical-Systems with Pw: Torweg-Sisal2-Hm
+4. Open SSH connection to the robot:
+	> ssh ssh thymio@134.34.226.238 
+	
+	( Do the same for 134.34.226.240, 134.34.226.241 )
+	
+	> thymio@134.34.226.238's password:thymio
+	> conda activate robat
+	
+	AGGREGATION
+	
+	> python /home/thymio/robat_py/robat_swarm/passive_robat/Scripts/robatv1_2_aggregation.py
+	
+	DISPERSION
+	
+	> python /home/thymio/robat_py/robat_swarm/passive_robat/Scripts/robatv1_2_dispersion.py
+	
+	ctrl+c to stop it
+		

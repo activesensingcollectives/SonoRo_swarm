@@ -2,7 +2,7 @@
 *Bio-Inspired Swarm of Robots with Audio-Based Localization*
 
 ## **Overview**  
-This repository contains work related to the **sonoRo Platform**, developed at the **Center for the Advanced Study of Collective Behaviour** at the **University of Konstanz**.  
+This repository contains work related to the **SonoRo Platform**, developed at the **Center for the Advanced Study of Collective Behaviour** at the **University of Konstanz**.  
 
 The project focuses on creating a **bio-inspired swarm of robots** to:  
 1. Study bats' echolocation behavior within groups of conspecifics (members of the same species).  
@@ -24,10 +24,25 @@ The project uses **Direction of Arrival (DOA) algorithms** for audio-based local
 
 1. Clone the repository:  
 
+```bash
+git clone https://github.com/activesensingcollectives/SonoRo_swarm
+```
+
+2. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+
+
 ## **Acknowledgments**  
 Developed at the **Center for the Advanced Study of Collective Behaviour**, **University of Konstanz**.  
 
 For collaborations and more info:  
-[alberto.doimo@uni-konstanz.de]
-[(https://www.exc.uni-konstanz.de/collective-behaviour/research/structure/c-computational-methods/swarm-ro-bat-ics-building-a-robot-analog-of-echolocating-swarms/)]
-[https://www.activesensingcollectives.com/]
+
+alberto.doimo@uni-konstanz.de 
+
+https://www.exc.uni-konstanz.de/collective-behaviour/research/structure/c-computational-methods/swarm-ro-bat-ics-building-a-robot-analog-of-echolocating-swarms/
+
+https://www.activesensingcollectives.com/
