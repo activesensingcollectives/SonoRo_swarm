@@ -80,6 +80,8 @@ class AudioProcessor:
         self,
         fs,
         channels,
+        radius,
+        shift,
         block_size,
         analyzed_buffer_time,
         data,
@@ -102,6 +104,8 @@ class AudioProcessor:
     ):
         self.fs = fs
         self.channels = channels
+        self.radius = (radius,)
+        self.shift = (shift,)
         self.block_size = block_size
         self.analyzed_buffer_time = analyzed_buffer_time
         self.data = data
@@ -115,6 +119,7 @@ class AudioProcessor:
         self.theta_das = theta_das
         self.N_peaks = N_peaks
         self.soundcard_index = soundcard_index
+        self.subtype = subtype
         self.interp_sensitivity = interp_sensitivity
         self.tgtmic_relevant_freqs = tgtmic_relevant_freqs
         self.filename = filename
@@ -156,6 +161,7 @@ class AudioProcessor:
             mode="x",
             samplerate=self.rec_samplerate,
             channels=self.channels,
+            subtype=self.subtype,
         ) as file:
             with sd.InputStream(
                 samplerate=self.fs,
@@ -460,6 +466,144 @@ class AudioProcessor:
             self.mic_spacing,
             [self.highpass_freq, self.lowpass_freq],
             theta=self.theta_das,
+        )
+        peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
+
+        peak_angles = theta[peaks]
+        N = self.N_peaks  # Number of peaks to keep
+
+        # Sort peaks by their height and keep the N largest ones
+        peak_heights = spatial_resp[peaks]
+        top_n_peak_indices = np.argsort(peak_heights)[
+            -N:
+        ]  # Indices of the N largest peaks # Indices of the N largest peaks
+        top_n_peak_indices = top_n_peak_indices[::-1]
+        peak_angles = theta[peaks[top_n_peak_indices]]  # Corresponding angles
+
+        if dB_SPL_level > self.trigger_level or dB_SPL_level > self.critical_level:
+            return peak_angles[0], dB_SPL_level
+        else:
+            peak_angles = None
+            return peak_angles, dB_SPL_level
+
+    def update_das_UCA(self):
+        """Calculates DOA using Delay And Sum (DAS) method.
+
+        The processing pipeline includes:
+        1. High-pass filtering of the input buffer
+        2. Max detection using Hilbert transform on the reference channel
+        3. Full signal trimming around the maximum envelope peak
+        4. Calculates frequency-wise RMS values for the reference channel
+        5. Normalizes by mic sensitivity (from loaded calibration data)
+        6. Computes total RMS across relevant frequency bands
+        7. Converts to dB SPL level
+        8. DAS beamforming (only in the filtered bandwidth) for spatial response and direction estimation
+        9. Peak detection and angle extraction
+
+        Attributes Used
+        ---------------
+        self.buffer : numpy.ndarray
+            Input audio buffer containing the latest audio samples.
+        self.fs : int
+            Sampling frequency of the audio data.
+        self.ref : int
+            Index of the reference microphone channel.
+        self.sos : numpy.ndarray
+            Second-order sections for the highpass filter.
+        self.analyzed_buffer_time : float
+            Duration (in seconds) of the buffer to analyze.
+        self.interp_sensitivity : numpy.ndarray
+            Interpolated sensitivity values for frequency normalization.
+        self.tgtmic_relevant_freqs : list or numpy.ndarray
+            Indices of relevant frequency bands for the target microphone.
+        self.trigger_level : float
+            Threshold level for triggering angle calculation.
+        self.critical_level : float
+            Critical threshold level for angle calculation.
+        self.channels : int
+            Number of audio channels.
+        self.mic_spacing : float
+            Spacing between microphones for delay calculation.
+        self.highpass_freq : float
+            High-pass filter cutoff frequency.
+        self.lowpass_freq : float
+            Low-pass filter cutoff frequency.
+        self.theta_das : numpy.ndarray
+            Array of angles (in degrees) for DAS beamforming.
+        self.N_peaks : int
+            Number of peaks to detect in the spatial response.
+
+        Returns
+        -------
+        tuple
+            If the detected dB SPL level exceeds the trigger level or critical level:
+                (float, float): A tuple containing:
+                    - peak_angle (float): The angle (in degrees) of the strongest
+                      detected acoustic source
+                    - dB_SPL_level (float): The sound pressure level in dB SPL of the
+                      detected event
+            Otherwise:
+                (None, float): A tuple containing:
+                    - None: No direction detected
+                    - dB_SPL_level (float): The sound pressure level in dB SPL
+        Notes
+        -----
+        - The trimming window of self.analyzed_buffer_time seconds is centered on
+          the maximum envelope amplitude
+        - The DAS beamforming is performed only within the specified highpass and lowpass bandwidth
+        - Only the top N peaks (defined by N_peaks) sorted by their height are considered for direction
+          estimation
+
+        """
+        in_buffer = self.buffer
+
+        in_sig = signal.sosfiltfilt(self.sos, in_buffer[:, 1:5], axis=0)
+
+        # Filter the input with its envelope on ref channel
+        filtered_envelope = np.abs(signal.hilbert(in_sig[:, self.ref], axis=0))
+
+        max_envelope_idx = np.argmax(filtered_envelope)
+
+        # Trim all channels around the max
+        trim_ms = self.analyzed_buffer_time  # ms
+        trim_samples = int(self.fs * trim_ms)
+        half_trim = trim_samples // 2
+        trimmed_signal = np.zeros((trim_samples, in_sig.shape[1]), dtype=in_sig.dtype)
+
+        # Ensure trimmed_signal always has exactly trim_samples rows (matching trim_ms duration)
+        if max_envelope_idx - half_trim < 0:
+            start_idx = 0
+            end_idx = trim_samples
+        elif max_envelope_idx + half_trim > in_sig.shape[0]:
+            end_idx = in_sig.shape[0]
+            start_idx = end_idx - trim_samples
+        else:
+            start_idx = max_envelope_idx - half_trim
+            end_idx = start_idx + trim_samples
+
+        trimmed_signal = in_sig[start_idx:end_idx, :]
+
+        centrefreqs, freqrms = calc_native_freqwise_rms(
+            trimmed_signal[:, self.ref], self.fs
+        )
+        freqwise_Parms = freqrms / self.interp_sensitivity
+
+        total_rms_freqwise_Parms = np.sqrt(
+            np.sum(freqwise_Parms[self.tgtmic_relevant_freqs] ** 2)
+        )
+        dB_SPL_level = pascal_to_dbspl(
+            total_rms_freqwise_Parms
+        )  # dB SPL level for reference channel
+
+        theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter_UCA(
+            trimmed_signal,
+            self.fs,
+            self.channels - 1,
+            self.radius,
+            self.shift,
+            [2000, 9000],
+            theta=self.theta_das,
+            show=False,
         )
         peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
 

@@ -582,12 +582,18 @@ def das_filter(y, fs, nch, d, bw, theta, c=343, wlen=64, show=False):
         nch - 1, 0, nch
     )  # np.linspace( nch-1,0, nch) = -90>0>90; np.linspace( 0,nch-1, nch) = 90>0>-90
     theta_rad = np.deg2rad(theta)
+
+    # Spatial frequencies matrix
     w_s_mat = (
         2 * np.pi * bands[:, None] * d * np.sin(theta_rad) / c
     )  # shape: (n_bands, len(theta))
+
+    # propagation vector (or steering vector) matrix
     a_mat = np.exp(np.outer(nch_range, -1j * w_s_mat.ravel())).reshape(
         nch, len(bands), len(theta)
     )  # (nch, n_bands, len(theta))
+
+    # Hermitian transpose of a_mat
     a_H_mat = np.conj(a_mat.transpose(1, 2, 0))  # (n_bands, len(theta), nch)
 
     for b_idx, f_idx in enumerate(band_idxs):
@@ -617,10 +623,89 @@ def das_filter(y, fs, nch, d, bw, theta, c=343, wlen=64, show=False):
     return theta, mag_p, f_spec_axis, spectrum, bands
 
 
+def das_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False):
+    """
+    Multiband Delay and Sum for a Uniform Circular Array (UCA).
+
+    Parameters:
+    r : float
+        Radius of the circular array in meters.
+    theta : np.ndarray
+        Scanning angles (azimuth) in degrees [0, 360].
+    """
+    # 1. Spectral Decomposition
+    f_spec_axis, _, spectrum = stft(
+        y, fs=fs, window=np.ones((wlen,)), nperseg=wlen, noverlap=wlen - 1, axis=0
+    )
+
+    band_idxs = np.where((f_spec_axis >= bw[0]) & (f_spec_axis <= bw[1]))[0]
+    bands = f_spec_axis[band_idxs]
+    theta_rad = np.deg2rad(theta)
+
+    # 2. UCA Geometry Logic
+    # Angular positions of the sensors in the array
+    shift_rad = np.deg2rad(shift)
+    phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
+
+    # Coordinates of microphones
+    mic_x = r * np.cos(phi_n)
+    mic_y = r * np.sin(phi_n)
+
+    # 3. Steering Vector Matrix (a_mat)
+    # The phase shift for UCA is exp(j * k * r * cos(theta - phi_n))
+    # Shape: (nch, n_bands, n_theta)
+    a_mat = np.zeros((nch, len(bands), len(theta)), dtype=complex)
+
+    for b_idx, f in enumerate(bands):
+        k = 2 * np.pi * f / c  # Wavenumber
+        for t_idx, t_start in enumerate(theta_rad):
+            # Projection of the plane wave onto the circular geometry
+            phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
+            a_mat[:, b_idx, t_idx] = np.exp(1j * phase)
+
+    # Hermitian transpose for the beamforming calculation
+    a_H_mat = np.conj(a_mat.transpose(1, 2, 0))  # (n_bands, n_theta, nch)
+
+    # 4. Spatial Filtering
+    p = np.zeros_like(theta, dtype=complex)
+
+    if show:
+        fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+
+    for b_idx, f_idx in enumerate(band_idxs):
+        spec = spectrum[f_idx, :, :]  # (nch, n_frames)
+        cov_est = np.cov(spec, bias=True)
+
+        a = a_mat[:, b_idx, :]  # (nch, n_theta)
+        a_H = a_H_mat[b_idx, :, :]  # (n_theta, nch)
+
+        # P = a^H * R * a / N^2
+        p_i = np.einsum("ij,jk,ki->i", a_H, cov_est, a) / (nch**2)
+        p += p_i
+
+        if show:
+            ax.plot(
+                theta_rad,
+                10 * np.log10(np.abs(p_i) + 1e-12),
+                label=f"{bands[b_idx]:.1f} Hz",
+            )
+
+    mag_p = np.abs(p) / len(bands)
+
+    if show:
+        ax.set_title("UCA DAS Pseudospectra")
+        ax.set_theta_direction(-1)  # Clockwise
+        ax.set_theta_offset(np.pi / 2)  # North is 0 degrees
+        plt.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+        plt.show()
+
+    return theta, mag_p, f_spec_axis, spectrum, bands
+
+
 # Other functions
 
 
-def get_card(device_list):
+def get_card(device_list, device_name):
     """Get the index of the ASIO card in the device list.
 
     Parameters
@@ -636,7 +721,7 @@ def get_card(device_list):
     """
     for i, each in enumerate(device_list):
         dev_name = each["name"]
-        name = "MCHStreamer" in dev_name
+        name = device_name in dev_name
         if name:
             return i
     return None

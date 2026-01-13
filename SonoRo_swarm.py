@@ -142,7 +142,7 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices())
+soundcard_index = get_card(sd.query_devices(), "ReSpeaker")  # MCHStreamer, ReSpeaker
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
@@ -157,10 +157,12 @@ print("raspi_local_ip =", raspi_local_ip)
 behaviour = "dynamic_movement"  # Options: 'attraction', 'repulsion', 'dynamic_movement'
 
 # Parameters for the DOA algorithm
-trigger_level = 65  # dB SPL
+trigger_level = 70  # dB SPL
 critical_level = 75  # dB SPL
 c = 343  # speed of sound
-fs = 48000
+fs = 16000
+radius = 0.0323  # radius of the UCA in meters
+shift = 45  # degrees of shift of mics wrt 0 angle
 
 rec_samplerate = 48000
 input_buffer_time = 0.04  # seconds
@@ -181,25 +183,25 @@ avar_theta = None
 theta_values = []
 
 # Parameters for the DAS algorithm
-theta_das = np.linspace(-90, 90, 61)  # angles resolution for DAS spectrum
+theta_das = np.linspace(0, 360, 36)  # angles resolution for DAS spectrum
 N_peaks = 1  # Number of peaks to detect in DAS spectrum
 
 # Parameters for the chirp signal
-duration_out = 10e-3  # Duration in seconds
+duration_out = 5e-3  # Duration in seconds
 
 if behaviour == "attraction":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "repulsion":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "dynamic_movement":
-    silence_post = 110  # [ms] can probably pushed to 20
+    silence_post = 200  # [ms] can probably pushed to 20
 
 if behaviour == "attraction":
     amplitude = 0  # Amplitude of the chirp
 elif behaviour == "repulsion":
     amplitude = 0  # Amplitude of the chirp
 elif behaviour == "dynamic_movement":
-    amplitude = 0.6  # Amplitude of the chirp
+    amplitude = 0.5  # Amplitude of the chirp
 
 t = np.linspace(0, duration_out, int(fs * duration_out))
 start_f, end_f = 24e3, 2e3
@@ -280,10 +282,11 @@ if __name__ == "__main__":
     args.samplerate = fs
     args.rec_samplerate = rec_samplerate
     args.angle = 0
+    args.subtype = None
 
     # Set general save path
     time1 = startime.strftime("%Y-%m-%d")
-    save_path = "/home/thymio/robat_py/robat_swarm/passive_robat/"
+    save_path = os.path.dirname(__file__)
     folder_name = str(raspi_local_ip)
     folder_path = os.path.join(save_path, "Data", folder_name, time1)
 
@@ -308,6 +311,8 @@ if __name__ == "__main__":
     audio_processor = AudioProcessor(
         fs,
         channels,
+        radius,
+        shift,
         block_size,
         analyzed_buffer_time,
         data,
@@ -321,13 +326,14 @@ if __name__ == "__main__":
         theta_das,
         N_peaks,
         soundcard_index,
+        args.subtype,
         interp_sensitivity,
         tgtmic_relevant_freqs,
         args.filename,
         args.rec_samplerate,
         sos,
-        sweep,
     )
+
     robot_move = RobotMove(
         speed,
         turn_speed,
@@ -387,7 +393,9 @@ if __name__ == "__main__":
                         time.sleep(input_buffer_time * 2.3)
 
             if method == "DAS":
-                args.angle, dB_SPL_level = audio_processor.update_das()
+                args.angle, dB_SPL_level = audio_processor.update_das_UCA()
+                #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
+
                 angle_queue.put(args.angle)
                 level_queue.put(dB_SPL_level)
                 print("Angle:", args.angle, "dB SPL:", dB_SPL_level[0])
@@ -420,12 +428,14 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         robot_move.stop()
+        robot_move.running = False
         parser.exit("KeyboardInterrupt")
 
         inputstream_thread.join()
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
+
         print(
             "\n ---------------------------------------Recording finished--------------------------------- \nFilename: "
             + repr(args.filename)
