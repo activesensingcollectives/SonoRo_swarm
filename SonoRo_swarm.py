@@ -142,7 +142,7 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices(), "ReSpeaker")  # MCHStreamer, ReSpeaker
+soundcard_index = get_card(sd.query_devices(), "ReSpeaker") #MCHStreamer, ReSpeaker
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
@@ -158,14 +158,14 @@ behaviour = "dynamic_movement"  # Options: 'attraction', 'repulsion', 'dynamic_m
 
 # Parameters for the DOA algorithm
 trigger_level = 70  # dB SPL
-critical_level = 75  # dB SPL
+critical_level = 80  # dB SPL
 c = 343  # speed of sound
 fs = 16000
-radius = 0.0323  # radius of the UCA in meters
-shift = 45  # degrees of shift of mics wrt 0 angle
+radius = 0.0323 # radius of the UCA in meters
+shift = 45 # degrees of shift of mics wrt 0 angle 
 
-rec_samplerate = 48000
-input_buffer_time = 0.04  # seconds
+rec_samplerate = 16000
+input_buffer_time = 0.02  # seconds
 block_size = int(
     input_buffer_time * fs
 )  # used for the shared queue from which the doa is computed, not anymore for the output stream
@@ -183,7 +183,7 @@ avar_theta = None
 theta_values = []
 
 # Parameters for the DAS algorithm
-theta_das = np.linspace(0, 360, 36)  # angles resolution for DAS spectrum
+theta_das = np.arange(0, 360, 20)  # (start, end, step)
 N_peaks = 1  # Number of peaks to detect in DAS spectrum
 
 # Parameters for the chirp signal
@@ -194,7 +194,7 @@ if behaviour == "attraction":
 elif behaviour == "repulsion":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "dynamic_movement":
-    silence_post = 200  # [ms] can probably pushed to 20
+    silence_post = 400  # [ms] can probably pushed to 20
 
 if behaviour == "attraction":
     amplitude = 0  # Amplitude of the chirp
@@ -248,6 +248,7 @@ freqs = np.array(sensitivity.iloc[:, 0])  # first column contains frequencies
 sens_freqwise_rms = np.array(
     sensitivity.iloc[:, 1]
 )  # Last column contains sensitivity values
+
 interp_sensitivity = interpolate_freq_response([freqs, sens_freqwise_rms], centrefreqs)
 
 frequency_band = [2e3, 20e3]  # min, max frequency to do the compensation Hz
@@ -258,7 +259,7 @@ tgtmic_relevant_freqs = np.logical_and(
 
 # Straight speed
 speed = 150
-turn_speed = 100
+turn_speed = 150
 
 left_sensor_threshold = 400
 right_sensor_threshold = 400
@@ -331,9 +332,9 @@ if __name__ == "__main__":
         tgtmic_relevant_freqs,
         args.filename,
         args.rec_samplerate,
-        sos,
+        sos
     )
-
+    
     robot_move = RobotMove(
         speed,
         turn_speed,
@@ -367,7 +368,7 @@ if __name__ == "__main__":
         )
         repulsion_thread.start()
     elif behaviour == "dynamic_movement":
-        move_thread = threading.Thread(target=robot_move.audio_move, daemon=True)
+        move_thread = threading.Thread(target=robot_move.audio_move_360, daemon=True)
         move_thread.start()
     else:
         print("No valid behaviour provided")
@@ -435,7 +436,7 @@ if __name__ == "__main__":
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
-
+        
         print(
             "\n ---------------------------------------Recording finished--------------------------------- \nFilename: "
             + repr(args.filename)
