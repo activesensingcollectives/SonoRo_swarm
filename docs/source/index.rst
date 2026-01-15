@@ -1,5 +1,5 @@
-Welcome to SonoRo_swarm's documentation!
-===================================
+Welcome to **SonoRo_swarm**'s documentation!
+============================================
 
 **SonoRo_swarm** is a robotic swarm framework designed to run on the SonoRo robotic platform, supporting research and active sensing applications.
 
@@ -13,18 +13,7 @@ Features
 
 - Attraction and repulsion dynamics
 - Extensible architecture for custom behaviors
-- Active sensing capabilities
 - Data collection for post processing and analysis
-
-Quick Start
------------
-
-Check out the :doc:`usage` section for further information, including
-how to create your own SonoRo from the :ref:`installation` section.
-
-.. .. note::
-
-..    This project is under active development.
 
 Contents
 --------
