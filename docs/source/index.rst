@@ -20,7 +20,7 @@ Quick Start
 -----------
 
 Check out the :doc:`usage` section for further information, including
-how to :ref:`installation` the project.
+how to create your own SonoRo from the :ref:`installation` section.
 
 .. .. note::
 

@@ -1,8 +1,8 @@
 Usage
 =====
 
-Logic Overview
-----------------
+Overview
+--------
 
 By running  `SonoRo_swarm.py` on your SonoRo robots, AudioProcessor class starts streaming Direction of Arrival (DOA) of incoming audio to the robot and dB SPL values.
 
