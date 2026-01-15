@@ -30,8 +30,13 @@ Contents
 --------
 
 .. toctree::
-   :caption: Introduction:
+   :caption: Installation:
 
+   installation.rst
+
+.. toctree::
+   :caption: Usage:
+   
    usage.rst
 
 .. toctree::
