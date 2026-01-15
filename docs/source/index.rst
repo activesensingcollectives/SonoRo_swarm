@@ -21,12 +21,12 @@ Contents
 .. toctree::
    :caption: Installation:
 
-   installation.rst
+   installation
 
 .. toctree::
    :caption: Usage:
    
-   usage.rst
+   usage
 
 .. toctree::
    :caption: Examples:
