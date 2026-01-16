@@ -2,7 +2,7 @@ Installation
 ============
 
 Hardware
----------
+---------   
 * Single Board Computer: Raspberry Pi 4B 4 or 8 GB of RAM with recommended Raspberry Pi OS
 * SD Card: Minimum 32 GB (better 64 or more)
 * Audio Interface: `MCHStreamer Kit <https://www.minidsp.com/products/usb-audio-interface/mchstreamer>`_ or `MCHStreamer Lite <https://www.minidsp.com/products/usb-audio-interface/mchstreamer-lite>`_
@@ -31,9 +31,9 @@ Sofware
 
     .. code-block:: shell
 
-        wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
+        wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh"
         
-        bash Miniforge3-Linux-aarch64.s
+        bash Miniforge3-Linux-aarch64.sh
 
     - Create conda environment: (if not active run: ``source ~/miniforge/bin/activate``)
 

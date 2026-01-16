@@ -6,7 +6,7 @@ Welcome to **SonoRo_swarm**'s documentation!
 Overview
 --------
 
-SonoRo_swarm enables researchers and developers investigate bio-inspired swarm robotics behaviour using the SonoRo robotic platform. The framework supports active sensing mechanisms and collective intelligence patterns.
+**SonoRo_swarm** enables researchers and developers investigate bio-inspired swarm robotics behaviour using the SonoRo robotic platform. The framework supports active sensing mechanisms and collective intelligence patterns.
 
 Features
 --------
