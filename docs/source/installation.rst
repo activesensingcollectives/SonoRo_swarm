@@ -17,41 +17,67 @@ Hardware
 Sofware
 -------
 1. Install Raspberry Pi OS (Raspbian 64 bit OS) on the SD card using `Raspberry Pi Imager <https://www.raspberrypi.com/software/>`_:
+    
     - Enable SSH
     - Enable VNC
 
-        ``sudo raspi-config``
+    .. code-block:: shell
+        
+        sudo raspi-co   nfig
     
 2. Create a virtual environment with Conda or other tool of your choice:
+    
     - Install miniconda:
-        
-        ``wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh``
 
-        ``bash Miniforge3-Linux-aarch64.sh``
+    .. code-block:: shell
+
+        wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
+        
+        bash Miniforge3-Linux-aarch64.s
 
     - Create conda environment: (if not active run: ``source ~/miniforge/bin/activate``)
+
+    .. code-block:: shell
         
-        ``conda create -n <env_name> python=3.11.2``
+        conda create -n <env_name> python=3.11.2
+
 3. Install the required python packages:
+   
+    .. code-block:: shell
     
-    ``pip install -r requirements.txt``
+        pip install -r requirements.txt
 
 4. Install specific packages if needed:
-    - PortAudio:
-        
-        ``sudo apt-get install libasound-dev libportaudio2 portaudio19-dev``
-    - Thymiodirect (from github):
-        
-        ``pip install thymiodirect@git+https://github.com/epfl-mobots/thymio-python``
-5. Clone the repository:
     
-    ``git clone https://github.com/activesensingcollectives/SonoRo_swarm.git``
+    - PortAudio:
+
+    .. code-block:: shell
+            
+        sudo apt-get install libasound-dev libportaudio2 portaudio19-dev
+    
+    - Thymiodirect (from github):
+
+    .. code-block:: shell
+
+        sudo apt-get install libasound-dev libportaudio2 portaudio19-dev
+    
+    - Thymiodirect (from github):
+
+    .. code-block:: shell
+
+        pip install thymiodirect@git+https://github.com/epfl-mobots/thymio-python
+
+5. Clone the repository:
+
+.. code-block:: shell
+
+    git clone https://github.com/activesensingcollectives/SonoRo_swarm.git
 
 6. Install and configure the audio interface:
+    
     - Follow the `instructions <https://www.minidsp.com/log-in-register>`_ and set up the soundcard to work with I2S mics.
 
-
-Assembly and Setup:
+Assembly and Setup
 -------------------
 - **Assembly**:
     1. Connect the Raspberry Pi to the MCHStreamer audio interface via USB.
