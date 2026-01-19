@@ -107,7 +107,7 @@ def update_das(frame):
         4,
         radius,
         45,
-        [2000, 9000],
+        [100, 3400],
         np.linspace(0, 360, 361),
         show=False,
     )
@@ -241,14 +241,14 @@ stream = sd.InputStream(
     device=usb_card_index,
     samplerate=fs,
     channels=channels,
-    blocksize=512,
+    blocksize=0,
     callback=audio_callback,
 )
 
 stream.start()
 
 # ani = FuncAnimation(fig1, animate_lin, init_func=init, interval=100, blit=True)
-ani = FuncAnimation(fig2, animate_polar, init_func=init, interval=20, blit=True)
+ani = FuncAnimation(fig2, animate_polar, init_func=init, interval=100, blit=True)
 
 try:
     plt.show()

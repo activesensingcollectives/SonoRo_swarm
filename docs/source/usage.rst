@@ -14,42 +14,37 @@ By selecting ``attraction`` behaviour, the robot will move towards the direction
 The ``dynamic_movement`` parameter instead combined the two movements together using the selected dB SPL ``trigger_level`` and ``critical_level`` thresholds.
 When the dB SPL is above the `critical` threshold, the robot will move away from the sound source, while when it is above the `trigger` threshold, it will move towards it.
 
-Robot Movement
+
+Audio Sensing
+--------------
+Audio sensing is performed by the ``AudioProcessor.py`` class, which uses mainly the ``instructions <>``sounddevice`` and ``soundfile`` libraries to access the sound card input (``AudioProcessor.input_stream``) and output stream (``AudioProcessor.output_stream``) and record raw mic data. The main worflow follows this structure:
+
+- An output stream is opened to play a chirp through the sound card output (``AudioProcessor.output_stream``). 
+- When the output is ended, an input strem (``AudioProcessor.output_stream``) id opened and a buffer is capture and recorded from the sound card.
+- The buffer is shared into a queue object to allow DOA processing.
+- DOA and dB SPL are calculated using ``update_das`` function; dB SPL of the average sound intensity is calculated thanks to the sensitivity characterization of the mics (:download:`sensitivity <../../Knowles_SPH0645LM4H-B_sensitivity.csv>`); DAS is used for the DOA estimation.
+
+   .. automethod:: AudioProcessor.AudioProcessor.update_das
+
+- If the calculated dB SPL is above the ``trigger_level`` or ``critical_level``, the DOA and dB SPL values are pushed into two separate queue objects to be read by the ``RobotMove`` class.
+
+   .. automethod:: AudioProcessor.AudioProcessor.push_to_queue
+
+   Robot Movement
 ---------------
 The robot movement is controlled by the ``RobotMove.py`` class, which reads the continuos stream of DOA and dB SPL values from the ``AudioProcessor.py`` class.
 
 TO BE FINISHED...
 
-Audio Sensing
---------------
-TO BE ADDED...
-
 RAW FILES:
 ----------
-.. literalinclude:: ../../SonoRo_swarm.py
-   :language: python
-   :linenos:
-   :caption: SonoRo_swarm.py
 
 Click :download:`here <../../SonoRo_swarm.py>` to view the raw Python script.
 
-.. literalinclude:: ../../AudioProcessor.py
-   :language: python
-   :linenos:
-   :caption: AudioProcessor.py
-
 Click :download:`here <../../AudioProcessor.py>` to view the raw Python script.
-
-.. literalinclude:: ../../RobotMove.py
-   :language: python
-   :linenos:
-   :caption: RobotMove.py
 
 Click :download:`here <../../RobotMove.py>` to view the raw Python script.
 
-.. literalinclude:: ../../utilities.py
-   :language: python
-   :linenos:
-   :caption: utilities.py
+Click :download:`here <../../utilities.py>` to view the raw Python script.
 
 Click :download:`here <../../utilities.py>` to view the raw Python script.

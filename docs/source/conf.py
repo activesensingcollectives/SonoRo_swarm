@@ -1,6 +1,8 @@
 # Configuration file for the Sphinx documentation builder.
 
 # -- Project information
+import os
+import sys
 
 project = "SonoRo_swarm"
 copyright = "2025, Alberto Doimo"
@@ -10,6 +12,13 @@ author = "Alberto Doimo"
 # version = "0.1.0"
 
 # -- General configuration
+sys.path.insert(
+    0,
+    os.path.abspath(
+        "/home/alberto/Documents/ActiveSensingCollectives_lab/SonoRo_swarm/"
+    ),
+)
+
 
 extensions = [
     "sphinx.ext.duration",

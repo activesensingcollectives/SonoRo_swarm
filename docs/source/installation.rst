@@ -23,7 +23,7 @@ Sofware
 
     .. code-block:: shell
         
-        sudo raspi-co   nfig
+        sudo raspi-config
     
 2. Create a virtual environment with Conda or other tool of your choice:
     
