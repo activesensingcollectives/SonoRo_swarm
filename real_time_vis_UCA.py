@@ -27,17 +27,17 @@ from utilities import *
 global fs, channels, radius, sos
 
 c = 343.0  # speed of sound
-fs = 16000  # sampling frequency
-channels = 5
-radius = 0.0323  # radius of the microphone array in meters
+fs = 48000  # sampling frequency
+channels = 6
+radius = 0.025  # radius of the microphone array in meters
 
-cutoff = 1000  # high-pass filter cutoff frequency in Hz
+cutoff = 100  # high-pass filter cutoff frequency in Hz
 sos = signal.butter(1, cutoff, "hp", fs=fs, output="sos")
 
 
 def get_card(device_list):
     for i, each in enumerate(device_list):
-        if "ReSpeaker" in each["name"]:
+        if "MCHStreamer" in each["name"]:
             return i
 
 
@@ -73,9 +73,10 @@ def update_das(frame):
         return None
 
     in_sig = signal.sosfiltfilt(sos, in_sig, axis=0)
-    in_sig = in_sig[
-        :, 1:5
-    ]  # ReSpeaker 4-mic array: use channels 1 to 4 for the processing; ch0=summed signal from all mics, ch5 = speaker out signal
+    in_sig = in_sig[:, [3, 4, 5, 0, 1, 2]]  # Use channels 1 to 4 for processing
+    # in_sig = in_sig[
+    #     :, 1:5
+    # ]  # ReSpeaker 4-mic array: use channels 1 to 4 for the processing; ch0=summed signal from all mics, ch5 = speaker out signal
 
     # # Filter the input with its envelope on ref channel
     # filtered_envelope = np.abs(signal.hilbert(in_sig[:, 1], axis=0))
@@ -101,21 +102,30 @@ def update_das(frame):
 
     # trimmed_signal = in_sig[start_idx:end_idx, :]
 
-    theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter_UCA(
+    theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter_CA(
         in_sig,
         fs,
-        4,
+        6,
         radius,
-        45,
-        [100, 3400],
+        60,
+        [100, 6000],
         np.linspace(0, 360, 361),
         show=False,
     )
 
+    # theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter(
+    #     in_sig,
+    #     fs,
+    #     5,
+    #     0.018,
+    #     [100, 5000],
+    #     np.linspace(0, 360, 361),
+    # )
+
     peaks, _ = signal.find_peaks(spatial_resp)
 
     peak_angles = theta[peaks]
-    N = 3  # Number of peaks to keep
+    N = 2  # Number of peaks to keep
 
     # Sort peaks by their height and keep the N largest ones
     peak_heights = spatial_resp[peaks]
@@ -157,7 +167,7 @@ ax2.set_ylim(0, 1.1)  # Assuming normalized response; adjust if necessary
 
 # Initialize plot objects
 (line,) = ax2.plot([], [], lw=1.5, color="blue", label="Spatial Response")
-(peak_dots,) = ax2.plot([], [], "r+", markersize=8, label="Detected Peaks")
+(peak_dots,) = ax2.plot([], [], "r+", markersize=12, label="Detected Peaks")
 ax2.legend(loc="lower right")
 
 
