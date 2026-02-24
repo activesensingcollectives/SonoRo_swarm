@@ -69,6 +69,8 @@ class AudioProcessor:
     ----------
     shared_audio_queue : queue.Queue
         Thread-safe queue for audio buffer exchange.
+    ts_queue : queue.Queue
+        Thread-safe queue for timestamp exchange.
     current_frame : int
         Current frame position in playback.
     buffer : np.ndarray
@@ -128,6 +130,12 @@ class AudioProcessor:
 
         self.current_frame = 0
         self.shared_audio_queue = queue.Queue()
+        self.ts_queue = queue.Queue()
+
+        # Initialize an empty (0, channels) array as our LIFO stack
+        self.stack = np.empty((0, self.channels), dtype=np.float32)
+        self.max_rows = int(self.block_size * 2)
+
         self.buffer = np.zeros((self.block_size, self.channels), dtype=np.float32)
 
     def continuos_recording(self):
@@ -168,11 +176,17 @@ class AudioProcessor:
                 device=self.soundcard_index,
                 channels=self.channels,
                 callback=self.callback_in,
-                blocksize=self.block_size,
+                blocksize=int(
+                    self.fs // 1000,
+                ),  # 1ms blocks for more real-time
             ):
+                timestamp = datetime.datetime.timestamp(
+                    datetime.datetime.now(datetime.timezone.utc)
+                )
+                print(f"Recording started at {timestamp}\n")
+                self.ts_queue.put(timestamp)
                 while True:
-                    self.buffer = self.shared_audio_queue.get()
-                    file.write(self.buffer)
+                    file.write(self.shared_audio_queue.get())
 
     def input_stream(self):
         """Continuously captures audio from the specified sound device.
@@ -200,10 +214,13 @@ class AudioProcessor:
             device=self.soundcard_index,
             channels=self.channels,
             callback=self.callback_in,
-            blocksize=self.block_size,
-        ) as in_stream:
-            while in_stream.active:
-                self.buffer = self.shared_audio_queue.get()
+            blocksize=int(self.fs // 1000),  # 1ms blocks for more real-time
+        ):
+            timestamp = datetime.datetime.timestamp(
+                datetime.datetime.now(datetime.timezone.utc)
+            )
+            print(f"Recording started at {timestamp}\n")
+            self.ts_queue.put(timestamp)
 
     def callback_out(self, outdata, frames, time, status):
         """Audio output callback for streaming audio data.
@@ -265,13 +282,50 @@ class AudioProcessor:
         ---------------
         self.shared_audio_queue : queue.Queue
             Thread-safe queue for storing incoming audio buffers.
+        self.stack : numpy.ndarray
+            LIFO stack to store incoming audio buffers for processing.
 
         Notes
         -----
         Execution time is approximately 0.00013 seconds per operation.
 
         """
+        # Push the new chunk (n, channels) to the vertical stack
+        self.stack = np.vstack((self.stack, indata))
+        # print(
+        #     f"Received audio block with shape {indata.shape}. Current stack size: {self.stack.shape[0]} rows."
+        # )
+        # If the stack gets too tall, slice off the top (the oldest data)
+        if self.stack.shape[0] > self.max_rows:
+            self.stack = self.stack[-self.max_rows :]
+            # print(
+            #     f"Stack exceeded max history. Oldest data discarded. Current stack size: {self.stack.shape[0]} rows."
+            # )
+
         self.shared_audio_queue.put((indata).copy())
+
+    def pop_stack_chunk(self):
+        """
+        Pops a variable LIFO chunk from the stack based on a time duration.
+        """
+        # Convert to number of samples (rows)
+        num_rows = self.block_size
+
+        # Check if the stack has accumulated enough time/data yet
+        if num_rows > self.stack.shape[0]:
+            print(
+                f"Warning: Requested {self.analyzed_buffer_time}ms but stack only has {self.stack.shape[0] / self.fs}sec"
+            )
+            return None
+
+        # Extract the last 'num_rows' (Newest data / LIFO)
+        chunk = self.stack[-num_rows:].copy()
+        # print(f"Popped chunk of shape {chunk.shape} from stack for processing.")
+
+        # Remove the extracted chunk from the internal stack
+        self.stack = self.stack[:-num_rows]
+
+        return chunk
 
     def update_CC(self):
         """Calculates DOA using Cross-Correlation (CC) method.
@@ -320,7 +374,9 @@ class AudioProcessor:
                 RMS across relevant frequency bands for the reference channel.
 
         """
-        in_buffer = self.buffer
+        # in_buffer = self.buffer
+
+        in_buffer = self.pop_stack_chunk()
 
         in_sig = signal.sosfiltfilt(self.sos, in_buffer, axis=0)
 
@@ -419,7 +475,9 @@ class AudioProcessor:
           estimation
 
         """
-        in_buffer = self.buffer
+        # in_buffer = self.buffer
+
+        in_buffer = self.pop_stack_chunk()
 
         in_sig = signal.sosfiltfilt(self.sos, in_buffer, axis=0)
 
@@ -555,7 +613,9 @@ class AudioProcessor:
           estimation
 
         """
-        in_buffer = self.buffer
+        # in_buffer = self.buffer
+
+        in_buffer = self.pop_stack_chunk()
 
         in_sig = signal.sosfiltfilt(self.sos, in_buffer[:, 1:5], axis=0)
 

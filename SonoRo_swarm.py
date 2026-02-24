@@ -131,6 +131,14 @@ print("imports done")
 ###############################################################################
 # SETUP PARAMETERS
 ###############################################################################
+# Create queues for storing data
+timestamp_queue = queue.Queue()
+
+timestamp_bool = True  # Set to True to save timestamps, False to not save timestamps
+if timestamp_bool == True:
+    print("Timestamps saving is ENABLED")
+else:
+    print("Timestamps saving is DISABLED")
 
 recording_bool = (
     True  # Set to True to record audio, False to just process audio without recording
@@ -142,7 +150,7 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices(), "ReSpeaker") #MCHStreamer, ReSpeaker
+soundcard_index = get_card(sd.query_devices(), "MCHStreamer")  # MCHStreamer, ReSpeaker
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
@@ -160,12 +168,12 @@ behaviour = "dynamic_movement"  # Options: 'attraction', 'repulsion', 'dynamic_m
 trigger_level = 70  # dB SPL
 critical_level = 80  # dB SPL
 c = 343  # speed of sound
-fs = 16000
-radius = 0.0323 # radius of the UCA in meters
-shift = 45 # degrees of shift of mics wrt 0 angle 
+fs = 48000
+radius = 0.0323  # radius of the UCA in meters
+shift = 45  # degrees of shift of mics wrt 0 angle
 
-rec_samplerate = 16000
-input_buffer_time = 0.02  # seconds
+rec_samplerate = fs
+input_buffer_time = 0.03  # seconds
 block_size = int(
     input_buffer_time * fs
 )  # used for the shared queue from which the doa is computed, not anymore for the output stream
@@ -183,18 +191,18 @@ avar_theta = None
 theta_values = []
 
 # Parameters for the DAS algorithm
-theta_das = np.arange(0, 360, 20)  # (start, end, step)
+theta_das = np.linspace(-90, 90, 61)  # angles resolution for DAS spectrum
 N_peaks = 1  # Number of peaks to detect in DAS spectrum
 
 # Parameters for the chirp signal
-duration_out = 5e-3  # Duration in seconds
+duration_out = 10e-3  # Duration in seconds
 
 if behaviour == "attraction":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "repulsion":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "dynamic_movement":
-    silence_post = 400  # [ms] can probably pushed to 20
+    silence_post = 100  # [ms] can probably pushed to 20
 
 if behaviour == "attraction":
     amplitude = 0  # Amplitude of the chirp
@@ -204,7 +212,7 @@ elif behaviour == "dynamic_movement":
     amplitude = 0.5  # Amplitude of the chirp
 
 t = np.linspace(0, duration_out, int(fs * duration_out))
-start_f, end_f = 24e3, 2e3
+start_f, end_f = 8e3, 2e2
 sweep = signal.chirp(t, start_f, t[-1], end_f)
 sweep *= signal.windows.tukey(sweep.size, 0.2)
 sweep *= 0.8
@@ -296,7 +304,7 @@ if __name__ == "__main__":
         time2 = startime.strftime("_%Y-%m-%d__%H-%M-%S")
         os.makedirs(folder_path, exist_ok=True)
 
-        name = "audio_recording_" + str(raspi_local_ip) + str(time2) + ".wav"
+        name = "MULTIWAV_" + str(raspi_local_ip) + str(time2) + ".wav"
         args.filename = os.path.join(folder_path, name)
 
         if args.samplerate is None:
@@ -307,6 +315,16 @@ if __name__ == "__main__":
             timenow = datetime.datetime.now()
             args.filename = name
         print(args.samplerate)
+
+    if timestamp_bool == True:
+        # Create folder for saving timestamps
+        time2 = startime.strftime("_%Y-%m-%d__%H-%M-%S")
+        os.makedirs(folder_path, exist_ok=True)
+        folder_path_data = os.path.join(save_path, "Data", folder_name, time1)
+        os.makedirs(folder_path_data, exist_ok=True)
+
+        name = "TIMESTAMPS_" + str(raspi_local_ip) + str(time2) + ".csv"
+        args.timestamp_filename = os.path.join(folder_path_data, name)
 
     # Create instances of the AudioProcessor and RobotMove classes
     audio_processor = AudioProcessor(
@@ -332,9 +350,9 @@ if __name__ == "__main__":
         tgtmic_relevant_freqs,
         args.filename,
         args.rec_samplerate,
-        sos
+        sos,
     )
-    
+
     robot_move = RobotMove(
         speed,
         turn_speed,
@@ -374,10 +392,24 @@ if __name__ == "__main__":
         print("No valid behaviour provided")
 
     event = threading.Event()
+
+    time2 = startime.strftime("_%Y-%m-%d__%H-%M-%S")
+    os.makedirs(folder_path, exist_ok=True)
+    name = "TIMESTAMPS_" + str(raspi_local_ip) + str(time2)
+    npy_data = os.path.join(folder_path, name)
+
+    # timestamp_queue.put([audio_processor.ts_queue.get(), 0, 'recording_start'])
+    timestamp_queue.put([audio_processor.ts_queue.get(), 0, 0, "recording_start"])
     try:
         while True:
             start_time = time.time()
             event.clear()
+            timestamp = datetime.datetime.timestamp(
+                datetime.datetime.now(datetime.timezone.utc)
+            )  # POSIX timestamp
+            timestamp_queue.put(
+                [timestamp, 0, 0, "output_start"]
+            )  # Put the timestamp in the queue (no block=False, keeps all values)
             with sd.OutputStream(
                 samplerate=fs,
                 blocksize=0,
@@ -394,14 +426,35 @@ if __name__ == "__main__":
                         time.sleep(input_buffer_time * 2.3)
 
             if method == "DAS":
-                args.angle, dB_SPL_level = audio_processor.update_das_UCA()
-                #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
+                # timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S:%f')[:-3]  # Format timestamp to milliseconds
+                timestamp = datetime.datetime.timestamp(
+                    datetime.datetime.now(datetime.timezone.utc)
+                )  # POSIX timestamp
+                args.angle, dB_SPL_level = audio_processor.update_das()
+                timestamp_queue.put(
+                    [timestamp, dB_SPL_level[0], args.angle]
+                )  # Put the timestamp in the queue (no block=False, keeps all values)
+                # args.angle, dB_SPL_level = audio_processor.update_das_UCA()
+                # #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
 
                 angle_queue.put(args.angle)
                 level_queue.put(dB_SPL_level)
                 print("Angle:", args.angle, "dB SPL:", dB_SPL_level[0])
 
             elif method == "CC":
+                # timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S:%f')[:-3]  # Format timestamp to milliseconds
+                timestamp = datetime.datetime.timestamp(
+                    datetime.datetime.now(datetime.timezone.utc)
+                )  # POSIX timestamp
+
+                args.angle, dB_SPL_level = audio_processor.update_das()
+                timestamp_queue.put(
+                    [timestamp, dB_SPL_level[0], args.angle]
+                )  # Put the timestamp in the queue (no block=False, keeps all values)
+                np.save(
+                    npy_data,
+                    np.array([timestamp, dB_SPL_level[0], args.angle], dtype=object),
+                )
                 args.angle, dB_SPL_level = audio_processor.update_CC()
                 angle_queue.put(args.angle)
                 level_queue.put(dB_SPL_level)
@@ -416,28 +469,70 @@ if __name__ == "__main__":
 
     except Exception as e:
         robot_move.stop()
-        parser.exit(type(e).__name__ + ": " + str(e))
+
+        # Collect all remaining items from the queue and append to existing npy data
+        remaining_data = []
+        while not timestamp_queue.empty():
+            remaining_data.append(timestamp_queue.get())
+        if remaining_data:
+            # Load existing data if file exists
+            if os.path.exists(npy_data + ".npy"):
+                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                # Ensure existing_data is always a list of records
+                if existing_data.ndim == 1 and isinstance(
+                    existing_data[0], (list, np.ndarray)
+                ):
+                    combined_data = np.concatenate(
+                        [existing_data, remaining_data], axis=0
+                    )
+                else:
+                    combined_data = np.array(
+                        [existing_data] + remaining_data, dtype=object
+                    )
+            else:
+                combined_data = np.array(remaining_data, dtype=object)
+            np.save(npy_data, combined_data)
+        print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
         inputstream_thread.join()
+
+        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
-        print(
-            "\n ---------------------------------------Recording finished--------------------------------- \nFilename: "
-            + repr(args.filename)
-        )
+        parser.exit(type(e).__name__ + ": " + str(e))
 
     except KeyboardInterrupt:
         robot_move.stop()
-        robot_move.running = False
-        parser.exit("KeyboardInterrupt")
 
+        # Collect all remaining items from the queue and append to existing npy data
+        remaining_data = []
+        while not timestamp_queue.empty():
+            remaining_data.append(timestamp_queue.get())
+        if remaining_data:
+            # Load existing data if file exists
+            if os.path.exists(npy_data + ".npy"):
+                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                # Ensure existing_data is always a list of records
+                if existing_data.ndim == 1 and isinstance(
+                    existing_data[0], (list, np.ndarray)
+                ):
+                    combined_data = np.concatenate(
+                        [existing_data, remaining_data], axis=0
+                    )
+                else:
+                    combined_data = np.array(
+                        [existing_data] + remaining_data, dtype=object
+                    )
+            else:
+                combined_data = np.array(remaining_data, dtype=object)
+            np.save(npy_data, combined_data)
+        print(f"\nMatrix has been saved to npy at {npy_data}\n")
+        robot_move.running = False
+
+        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         inputstream_thread.join()
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
-        
-        print(
-            "\n ---------------------------------------Recording finished--------------------------------- \nFilename: "
-            + repr(args.filename)
-        )
+        parser.exit("KeyboardInterrupt")
