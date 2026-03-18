@@ -46,4 +46,10 @@ html_logo = "_static/SonoRoSwarm_logo.jpeg"
 # Hides classes and functions from the sidebar menu
 toc_object_entries = False
 
-autodoc_mock_imports = ["numpy", "thymiodirect", "scipy"]
+autodoc_mock_imports = [
+    "pyaudio",  # Fails on RTD (no soundcard)
+    "sounddevice",  # Fails on RTD (no soundcard)
+    "thymiodirect",  # Fails on RTD (no robot)
+    "serial",  # Fails on RTD (no USB ports)
+    "RPi",  # Fails on RTD (not a Raspberry Pi)
+]
