@@ -14,9 +14,7 @@ author = "Alberto Doimo"
 # -- General configuration
 sys.path.insert(
     0,
-    os.path.abspath(
-        "/home/alberto/Documents/ActiveSensingCollectives_lab/SonoRo_swarm/"
-    ),
+    os.path.abspath("../../"),
 )
 
 
@@ -43,4 +41,4 @@ html_theme = "sphinx_rtd_theme"
 # -- Options for EPUB output
 epub_show_urls = "footnote"
 
-html_logo = "SonoRoSwarm_logo.png"
+html_logo = "_static/SonoRoSwarm_logo.jpeg"
