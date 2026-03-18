@@ -452,7 +452,7 @@ class RobotMove:
         """Move the robot forward at the specified forward speed.
 
         Attributes Used
-        ------
+        ----------------
         self.forward_speed : int
             Target speed for forward motor movement.
         self.robot : object
@@ -761,8 +761,6 @@ class RobotMove:
                 self.rotate_left(angle)
                 return
 
-
-
     def audio_move_360(self):
         """Execute attraction and repulsion-based movement behaviour for the robot.
         Based on given angles over 360 degrees.
@@ -820,7 +818,7 @@ class RobotMove:
                         elif angle > 245 and angle < 300:
                             self.robot["leds.circle"] = [0, 0, 0, 0, 0, 0, 255, 0]
                         elif angle > 300 and angle < 345:
-                            self.robot["leds.circle"] = [0, 0, 0, 0, 0, 0, 0, 255]                            
+                            self.robot["leds.circle"] = [0, 0, 0, 0, 0, 0, 0, 255]
 
                     elif angle is None:
                         self.robot["leds.circle"] = [
@@ -850,7 +848,7 @@ class RobotMove:
                     self.robot["leds.bottom.right"] = [0, 0, 255]
                     self.robot["leds.bottom.left"] = [0, 0, 255]
                     if angle > 180:
-                        self.rotate_left(360-angle)
+                        self.rotate_left(360 - angle)
                         # Wait for the rotation to complete before continuing the loop
                         continue
                     else:

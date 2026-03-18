@@ -59,12 +59,6 @@ Sofware
 
     .. code-block:: shell
 
-        sudo apt-get install libasound-dev libportaudio2 portaudio19-dev
-    
-    - Thymiodirect (from github):
-
-    .. code-block:: shell
-
         pip install thymiodirect@git+https://github.com/epfl-mobots/thymio-python
 
 5. Clone the repository:
@@ -75,7 +69,7 @@ Sofware
 
 6. Install and configure the audio interface:
     
-    - Follow the `instructions <https://www.minidsp.com/log-in-register>`_ and set up the soundcard to work with I2S mics.
+    Follow the `instructions <https://www.minidsp.com/log-in-register>`_ and set up the soundcard to work with I2S mics.
     SonoRo uses ``AllRate`` firmware to work with I2S microphones.
 
 Assembly and Setup
