@@ -14,7 +14,7 @@ Utility functions used to run SonoRo_swarm.py
 import numpy as np
 import scipy.signal as signal
 from scipy.interpolate import interp1d
-from scipy.signal import stft
+from scipy.signal import stft, hilbert
 import time
 import matplotlib.pyplot as plt
 
@@ -598,6 +598,7 @@ def das_filter(y, fs, nch, d, bw, theta, c=343, wlen=64, show=False):
 
     for b_idx, f_idx in enumerate(band_idxs):
         spec = spectrum[f_idx, :, :]  # (nch, n_frames)
+        # print("spec shape", spectrum.shape)
         cov_est = np.cov(spec, bias=True)
         a = a_mat[:, b_idx, :]  # (nch, len(theta))
         a_H = a_H_mat[b_idx, :, :]  # (len(theta), nch)
@@ -670,11 +671,12 @@ def das_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False):
     p = np.zeros_like(theta, dtype=complex)
 
     if show:
-        fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+        fig, ax = plt.subplots()
 
     for b_idx, f_idx in enumerate(band_idxs):
-        spec = spectrum[f_idx, :, :]  # (nch, n_frames)
+        spec = spectrum[f_idx, :, :]  # (bands, nch, n_frames(time))
         cov_est = np.cov(spec, bias=True)
+        print("spec shape", spec.shape)
 
         a = a_mat[:, b_idx, :]  # (nch, n_theta)
         a_H = a_H_mat[b_idx, :, :]  # (n_theta, nch)
@@ -684,19 +686,40 @@ def das_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False):
         p += p_i
 
         if show:
+            linestyles = ["-", "--", "-.", ":"]
             ax.plot(
-                theta_rad,
-                10 * np.log10(np.abs(p_i) + 1e-12),
+                np.rad2deg(theta_rad),
+                np.abs(p_i) + 1e-12,
                 label=f"{bands[b_idx]:.1f} Hz",
+                linestyle=linestyles[b_idx % len(linestyles)],
             )
 
     mag_p = np.abs(p) / len(bands)
 
     if show:
         ax.set_title("UCA DAS Pseudospectra")
-        ax.set_theta_direction(-1)  # Clockwise
-        ax.set_theta_offset(np.pi / 2)  # North is 0 degrees
-        plt.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+        ax.plot(
+            np.rad2deg(theta_rad),
+            mag_p + 1e-12,
+            label=f"full spectrum",
+            linewidth=4,
+            color="black",
+        )
+        # ax.set_theta_direction(-1)  # Clockwise
+        # ax.set_theta_offset(np.pi / 2)  # North is 0 degrees
+        plt.grid()
+        ax.set_xlabel("Angle (Degrees)")
+        ax.set_ylabel("Magnitude (dB)")
+        plt.legend()
+        plt.show()
+
+    if show:
+        plt.figure()
+        plt.title(f"Spectrum at f={bands[8]:.1f} Hz")
+        plt.imshow(np.abs(spectrum[8, :, :]), aspect="auto", origin="lower")
+        plt.colorbar(label="Magnitude")
+        plt.xlabel("Frames")
+        plt.ylabel("Channels")
         plt.show()
 
     return theta, mag_p, f_spec_axis, spectrum, bands
@@ -808,3 +831,237 @@ def get_card(device_list, device_name):
         if name:
             return i
     return None
+
+
+def dmas_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False):
+    """
+    Multiband Delay Multiply and Sum (DMAS) for a Uniform Circular Array (UCA).
+
+    Parameters:
+    r : float
+        Radius of the circular array in meters.
+    theta : np.ndarray
+        Scanning angles (azimuth) in degrees [0, 360].
+    """
+    # 1. Spectral Decomposition
+    f_spec_axis, _, spectrum = stft(
+        y, fs=fs, window=np.ones((wlen,)), nperseg=wlen, noverlap=wlen - 1, axis=0
+    )
+
+    band_idxs = np.where((f_spec_axis >= bw[0]) & (f_spec_axis <= bw[1]))[0]
+    bands = f_spec_axis[band_idxs]
+    theta_rad = np.deg2rad(theta)
+
+    # 2. UCA Geometry Logic
+    # Angular positions of the sensors in the array
+    shift_rad = np.deg2rad(shift)
+    phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
+
+    # Coordinates of microphones
+    mic_x = r * np.cos(phi_n)
+    mic_y = r * np.sin(phi_n)
+
+    # 3. Steering Vector Matrix (a_mat)
+    # The phase shift for UCA is exp(j * k * r * cos(theta - phi_n))
+    # Shape: (nch, n_bands, n_theta)
+    a_mat = np.zeros((nch, len(bands), len(theta)), dtype=complex)
+
+    for b_idx, f in enumerate(bands):
+        k = 2 * np.pi * f / c  # Wavenumber
+        for t_idx, t_start in enumerate(theta_rad):
+            # Projection of the plane wave onto the circular geometry
+            phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
+            a_mat[:, b_idx, t_idx] = np.exp(1j * phase)
+
+    # Hermitian transpose for the beamforming calculation
+    a_H_mat = np.conj(a_mat.transpose(1, 2, 0))  # (n_bands, n_theta, nch)
+
+    # 4. Spatial Filtering
+    p = np.zeros_like(theta, dtype=complex)
+
+    if show:
+        fig, ax = plt.subplots()
+
+    for b_idx, f_idx in enumerate(band_idxs):
+        spec = spectrum[f_idx, :, :]  # (nch, n_frames)
+        cov_est = np.cov(spec, bias=True)
+
+        # --- DMAS MODIFICATIONS START ---
+        # 1. Take the square root of the magnitude while preserving the complex phase
+        cov_dmas = np.sqrt(np.abs(cov_est)) * (cov_est / (np.abs(cov_est)) + 1e-12)
+
+        # print("cov_est", np.sqrt(np.abs(cov_est)))
+        # print("cov_dmas", cov_dmas)
+
+        # 2. Remove auto-correlations (main diagonal) to improve spatial resolution
+        np.fill_diagonal(cov_dmas, 0)
+
+        # 3. Adjust normalization factor for the missing diagonal terms
+        num_cross_terms = (nch**2) - nch
+        # --- DMAS MODIFICATIONS END ---
+
+        a = a_mat[:, b_idx, :]  # (nch, n_theta)
+        a_H = a_H_mat[b_idx, :, :]  # (n_theta, nch)
+
+        # P = a^H * R_dmas * a / (N^2 - N)
+        p_i = np.einsum("ij,jk,ki->i", a_H, cov_dmas, a) / num_cross_terms
+        p += p_i
+
+        if show:
+            linestyles = ["-", "--", "-.", ":"]
+            ax.plot(
+                np.rad2deg(theta_rad),
+                np.abs(p_i) + 1e-12,
+                label=f"{bands[b_idx]:.1f} Hz",
+                linestyle=linestyles[b_idx % len(linestyles)],
+            )
+
+    mag_p = np.abs(p) / len(bands)
+
+    if show:
+        ax.set_title("UCA DMAS Pseudospectra")
+        ax.plot(
+            np.rad2deg(theta_rad),
+            mag_p + 1e-12,
+            label=f"full spectrum",
+            linewidth=4,
+            color="black",
+        )
+        plt.grid()
+        ax.set_xlabel("Angle (Degrees)")
+        ax.set_ylabel("Magnitude (dB)")
+        plt.legend()
+        plt.show()
+
+    return theta, mag_p, f_spec_axis, spectrum, bands
+
+
+def higher_order_dmas_UCA(
+    y, fs, nch, r, shift, bw, theta, c=343, wlen=64, order=3, apply_cf=True, show=False
+):
+    """
+    Multiband Higher-Order Delay Multiply and Sum (p-DMAS) for a Uniform Circular Array,
+    with optional Standard Coherence Factor (CF) weighting.
+
+    Parameters:
+    r : float
+        Radius of the circular array in meters.
+    theta : np.ndarray
+        Scanning angles (azimuth) in degrees [0, 360].
+    order : float, optional
+        The dimensionality order (p). order=2 is standard DMAS. order > 2 is higher-order.
+    apply_cf : bool, optional
+        Whether to calculate and apply the Standard Coherence Factor (CF). Defaults to True.
+    """
+    # 1. Spectral Decomposition
+    f_spec_axis, _, spectrum = stft(
+        y, fs=fs, window=np.ones((wlen,)), nperseg=wlen, noverlap=wlen - 1, axis=0
+    )
+
+    band_idxs = np.where((f_spec_axis >= bw[0]) & (f_spec_axis <= bw[1]))[0]
+    bands = f_spec_axis[band_idxs]
+    theta_rad = np.deg2rad(theta)
+
+    # 2. UCA Geometry Logic
+    shift_rad = np.deg2rad(shift)
+    phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
+
+    mic_x = r * np.cos(phi_n)
+    mic_y = r * np.sin(phi_n)
+
+    # 3. Steering Vector Matrix
+    a_mat = np.zeros((nch, len(bands), len(theta)), dtype=complex)
+
+    for b_idx, f in enumerate(bands):
+        k = 2 * np.pi * f / c
+        for t_idx, t_start in enumerate(theta_rad):
+            phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
+            a_mat[:, b_idx, t_idx] = np.exp(1j * phase)
+
+    a_H_mat = np.conj(a_mat.transpose(1, 2, 0))
+
+    # 4. Spatial Filtering
+    p_total = np.zeros_like(theta, dtype=float)
+    num_cross_terms = (nch**2) - nch
+
+    if show:
+        fig, ax = plt.subplots()
+
+    for b_idx, f_idx in enumerate(band_idxs):
+        spec = spectrum[f_idx, :, :]
+        cov_est = np.cov(spec, bias=True)
+
+        # ==========================================
+        # COHERENCE FACTOR (CF) CALCULATION
+        # ==========================================
+        if apply_cf:
+            # Numerator: Coherent Power (Standard DAS output)
+            a = a_mat[:, b_idx, :]
+            a_H = a_H_mat[b_idx, :, :]
+            p_das = np.real(np.einsum("ij,jk,ki->i", a_H, cov_est, a))
+
+            # Denominator: Total Incoherent Power (N * sum of auto-powers)
+            incoherent_power = nch * np.real(np.trace(cov_est))
+
+            # CF Weight (Bounded between 0 and 1)
+            cf = p_das / (incoherent_power + 1e-12)
+            cf = np.clip(cf, 0.0, 1.0)
+        else:
+            cf = 1.0  # No CF weighting applied
+
+        # ==========================================
+        # HIGHER ORDER DMAS MODIFICATIONS
+        # ==========================================
+        # 1. Take the p-th root (1/order) of the magnitude, preserve phase
+        cov_hdmas = np.power(np.abs(cov_est), 1.0 / order) * (
+            cov_est / (np.abs(cov_est) + 1e-12)  # added 1e-12 to avoid div by zero
+        )
+
+        # 2. Remove auto-correlations
+        np.fill_diagonal(cov_hdmas, 0)
+
+        a = a_mat[:, b_idx, :]
+        a_H = a_H_mat[b_idx, :, :]
+
+        # 3. Compute pseudo-power
+        p_pseudo = np.einsum("ij,jk,ki->i", a_H, cov_hdmas, a) / num_cross_terms
+
+        # 4. Dimensionality restoration: raise absolute value back to the power of `order`
+        p_restored = np.abs(p_pseudo) ** order
+
+        # 5. Apply Coherence Factor
+        p_final = p_restored * cf
+
+        p_total += p_final
+
+        if show:
+            linestyles = ["-", "--", "-.", ":"]
+            ax.plot(
+                np.rad2deg(theta_rad),
+                10
+                * np.log10(
+                    p_final + 1e-12
+                ),  # Added log10 back for better dB visualization
+                label=f"{bands[b_idx]:.1f} Hz",
+                linestyle=linestyles[b_idx % len(linestyles)],
+            )
+
+    mag_p = p_total / len(bands)
+
+    if show:
+        ax.set_title(f"UCA {order}-Order DMAS-CF Pseudospectra")
+        ax.plot(
+            np.rad2deg(theta_rad),
+            10
+            * np.log10(mag_p + 1e-12),  # Added log10 back for better dB visualization
+            label="Full spectrum",
+            linewidth=4,
+            color="black",
+        )
+        plt.grid()
+        ax.set_xlabel("Angle (Degrees)")
+        ax.set_ylabel("Magnitude (dB)")
+        plt.legend()
+        plt.show()
+
+    return theta, mag_p, f_spec_axis, spectrum, bands

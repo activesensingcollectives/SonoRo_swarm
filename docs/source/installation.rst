@@ -90,8 +90,9 @@ Assembly and Setup
     7. Insert SD card into the Raspberry Pi.
     8. Power on the Raspberry Pi using the powerbank (All the other components are powered from the Raspberry Pi).
 
+    Assembly diagram showing connections between Raspberry Pi, audio interface, microphones, DAC and loudspeaker.
+
     .. image:: ../wiring_diagram.png
-        :alt: Assembly diagram showing connections between Raspberry Pi, audio interface, microphones, DAC and loudspeaker. 
         :width: 600px
 
     Detailed wiring instructions and diagrams can be found here:

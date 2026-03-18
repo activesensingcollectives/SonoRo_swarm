@@ -27,24 +27,27 @@ Audio sensing is performed by the ``AudioProcessor.py`` class, which uses mainly
    .. automethod:: AudioProcessor.AudioProcessor.update_das
 
 - If the calculated dB SPL is above the ``trigger_level`` or ``critical_level``, the DOA and dB SPL values are pushed into two separate queue objects to be read by the ``RobotMove`` class.
+- All the DOAs implementaions and functions are found in ''utilities.py'':
 
-   .. automethod:: AudioProcessor.AudioProcessor.push_to_queue
+   .. automodule:: utilities
+      :members:
 
-   Robot Movement
+Robot Movement
 ---------------
 The robot movement is controlled by the ``RobotMove.py`` class, which reads the continuos stream of DOA and dB SPL values from the ``AudioProcessor.py`` class.
+   
+   .. autoclass:: RobotMove.RobotMove
+      :members:
+      
+Each time a new DOA and dB SPL value is read, SonoRo checks the thresholds (``trigger_level`` and ``critical_level``) and steers the wheels accordingly to perform the selected behaviour (``attraction``, ``repulsion`` or ``dynamic_movement``).
+The angular rotation is defined by the DOA value.
+SonoRo stays inside boundaries marked with reflective tape. ''left_sensor_threshold`` and ``right_sensor_threshold`` parameters can be set to adjust the sensitivity of the sensors to the reflective tape.
 
-TO BE FINISHED...
+Visual states from the Thymio LEDs:
 
-RAW FILES:
-----------
+- **Attraction** is represented by blue light.
+- **Repulsion** is represented by red light.
+- **Straight movement** is represented by the green light.
+- Doa Angle is visualized by the yellow ring LEDs, which light up in the direction of the sound source. 
 
-Click :download:`here <../../SonoRo_swarm.py>` to view the raw Python script.
 
-Click :download:`here <../../AudioProcessor.py>` to view the raw Python script.
-
-Click :download:`here <../../RobotMove.py>` to view the raw Python script.
-
-Click :download:`here <../../utilities.py>` to view the raw Python script.
-
-Click :download:`here <../../utilities.py>` to view the raw Python script.
