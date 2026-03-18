@@ -88,6 +88,10 @@ Assembly and Setup
     6. Connect the Thymio robot to the Raspberry Pi via USB.
     7. Insert SD card into the Raspberry Pi.
     8. Power on the Raspberry Pi using the powerbank (All the other components are powered from the Raspberry Pi).
+
+    Detailed wiring instructions and diagrams can be found here:
+    :download:`Download PDF <SonoRo_build_guide.pdf>`
+
 - **Setup**:
     1. Connect to the Pi via SSH or VNC.
     2. Follow the software installation steps above from step 2.

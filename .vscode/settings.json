@@ -5,6 +5,6 @@
     "fleet-coder.excludedFolders": [
         "build",
         ".git",
-        "/home/alberto/Documents/ActiveSensingCollectives_lab/SonoRo_swarm/Data"
+        "home/alberto/Documents/ActiveSensingCollectives_lab/SonoRo_swarm/Data/"
     ]
 }
