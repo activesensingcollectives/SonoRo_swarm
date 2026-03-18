@@ -19,17 +19,22 @@ Contents
 --------
 
 .. toctree::
+   :maxdepth: 2
    :caption: Installation:
 
    installation.rst
 
 .. toctree::
+   :maxdepth: 2
    :caption: Usage:
    
    usage.rst
 
 .. toctree::
-   :caption: Examples:
+   :maxdepth: 2
+   :caption: API Reference:
+
+   api.rst
 
 License
 -------

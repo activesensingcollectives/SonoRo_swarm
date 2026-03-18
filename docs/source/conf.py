@@ -42,3 +42,6 @@ html_theme = "sphinx_rtd_theme"
 epub_show_urls = "footnote"
 
 html_logo = "_static/SonoRoSwarm_logo.jpeg"
+
+# Hides classes and functions from the sidebar menu
+toc_object_entries = False

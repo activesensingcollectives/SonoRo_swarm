@@ -24,21 +24,13 @@ Audio sensing is performed by the ``AudioProcessor.py`` class, which uses mainly
 - The buffer is shared into a queue object to allow DOA processing.
 - DOA and dB SPL are calculated using ``update_das`` function; dB SPL of the average sound intensity is calculated thanks to the sensitivity characterization of the mics (:download:`sensitivity <../../Knowles_SPH0645LM4H-B_sensitivity.csv>`); Delay And Sum (DAS) is used for the DOA estimation.
 
-   .. automethod:: AudioProcessor.AudioProcessor.update_das
-
 - If the calculated dB SPL is above the ``trigger_level`` or ``critical_level``, the DOA and dB SPL values are pushed into two separate queue objects to be read by the ``RobotMove`` class.
 - All the DOAs implementaions and functions are found in ``utilities.py``:
 
-   .. automodule:: utilities
-      :members:
 
 Robot Movement
 ---------------
 The robot movement is controlled by the ``RobotMove.py`` class, which reads the continuos stream of DOA and dB SPL values from the ``AudioProcessor.py`` class.
-   
-   .. autoclass:: RobotMove.RobotMove
-      :members:
-      
 Each time a new DOA and dB SPL value is read, SonoRo checks the thresholds (``trigger_level`` and ``critical_level``) and steers the wheels accordingly to perform the selected behaviour (``attraction``, ``repulsion`` or ``dynamic_movement``).
 The angular rotation is defined by the DOA value.
 SonoRo stays inside boundaries marked with reflective tape. ``left_sensor_threshold`` and ``right_sensor_threshold`` parameters can be set to adjust the sensitivity of the sensors to the reflective tape.
