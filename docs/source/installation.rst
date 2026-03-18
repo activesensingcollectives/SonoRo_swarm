@@ -76,6 +76,7 @@ Sofware
 6. Install and configure the audio interface:
     
     - Follow the `instructions <https://www.minidsp.com/log-in-register>`_ and set up the soundcard to work with I2S mics.
+    SonoRo uses ``AllRate`` firmware to work with I2S microphones.
 
 Assembly and Setup
 -------------------
@@ -89,8 +90,12 @@ Assembly and Setup
     7. Insert SD card into the Raspberry Pi.
     8. Power on the Raspberry Pi using the powerbank (All the other components are powered from the Raspberry Pi).
 
+    .. image:: ../wiring_diagram.png
+        :alt: Assembly diagram showing connections between Raspberry Pi, audio interface, microphones, DAC and loudspeaker. 
+        :width: 600px
+
     Detailed wiring instructions and diagrams can be found here:
-    :download:`Download PDF <SonoRo_build_guide.pdf>`
+    :download:`Build guide <../SonoRo_build_guide.pdf>`
 
 - **Setup**:
     1. Connect to the Pi via SSH or VNC.

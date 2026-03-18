@@ -17,7 +17,7 @@ When the dB SPL is above the `critical` threshold, the robot will move away from
 
 Audio Sensing
 --------------
-Audio sensing is performed by the ``AudioProcessor.py`` class, which uses mainly the ``instructions <>``sounddevice`` and ``soundfile`` libraries to access the sound card input (``AudioProcessor.input_stream``) and output stream (``AudioProcessor.output_stream``) and record raw mic data. The main worflow follows this structure:
+Audio sensing is performed by the ``AudioProcessor.py`` class, which uses mainly the ``sounddevice`` and ``soundfile`` libraries to access the sound card input (``AudioProcessor.input_stream``) and output stream (``AudioProcessor.output_stream``) and record raw mic data. The main worflow follows this structure:
 
 - An output stream is opened to play a chirp through the sound card output (``AudioProcessor.output_stream``). 
 - When the output is ended, an input strem (``AudioProcessor.output_stream``) id opened and a buffer is capture and recorded from the sound card.
