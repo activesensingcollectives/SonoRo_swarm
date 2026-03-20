@@ -5,7 +5,7 @@ import os
 import sys
 
 project = "SonoRo_swarm"
-copyright = "2025, Alberto Doimo"
+copyright = "2026, Alberto Doimo"
 author = "Alberto Doimo"
 
 # release = "0.1"
@@ -17,6 +17,13 @@ sys.path.insert(
     os.path.abspath("../.."),
 )
 
+html_context = {
+    "display_github": True,  # Integrates GitHub
+    # "github_user": "albertodoimo", # Username
+    "github_repo": "SonoRo_swarm",  # Repo name
+    # "github_version": "main", # Version
+    "conf_py_path": "/docs/source/",  # Path in the checkout to the docs root
+}
 
 extensions = [
     "sphinx.ext.duration",

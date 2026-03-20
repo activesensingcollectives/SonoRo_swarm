@@ -8,6 +8,9 @@ The project focuses on creating a **bio-inspired swarm of robots** to:
 1. Study bats' echolocation behavior within groups of conspecifics (members of the same species).  
 2. Develop **audio-based localization systems** for swarm robotics.  
 
+## **Documentation**
+The documentation for the project is available `here <https://sonoro-swarm.readthedocs.io/en/latest/>`_
+
 ## **Objectives**  
 - **Understand Echolocation:** Simulate and study how bats use echolocation to navigate and interact in groups.  
 - **Swarm Robotics:** Implement a robotic system that mimics biological swarm behavior.  
@@ -17,8 +20,6 @@ The project focuses on creating a **bio-inspired swarm of robots** to:
 The project uses **Direction of Arrival (DOA) algorithms** for audio-based localization:  
 1. **Generalized Cross-Correlation with Phase Transform (GCC-PHAT)**  
 2. **Delay and Sum (DAS)**
-
-## **Documents**
 
 ## **Installation**  
 
