@@ -9,7 +9,7 @@ The project focuses on creating a **bio-inspired swarm of robots** to:
 2. Develop **audio-based localization systems** for swarm robotics.  
 
 ## **Documentation**
-The documentation for the project is available `here <https://sonoro-swarm.readthedocs.io/en/latest/>`_
+The documentation for the project is available at https://sonoro-swarm.readthedocs.io/en/latest/
 
 ## **Objectives**  
 - **Understand Echolocation:** Simulate and study how bats use echolocation to navigate and interact in groups.  

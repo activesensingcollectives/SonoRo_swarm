@@ -19,9 +19,9 @@ sys.path.insert(
 
 html_context = {
     "display_github": True,  # Integrates GitHub
-    # "github_user": "albertodoimo", # Username
+    "github_user": "activesensingcollectives",  # Username
     "github_repo": "SonoRo_swarm",  # Repo name
-    # "github_version": "main", # Version
+    "github_version": "main",  # Version
     "conf_py_path": "/docs/source/",  # Path in the checkout to the docs root
 }
 
