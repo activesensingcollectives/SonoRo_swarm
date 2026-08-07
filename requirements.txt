@@ -17,7 +17,7 @@ matplotlib==3.9.2
 msgpack==1.1.0
 netifaces==0.11.0
 numba==0.60.0
-numpy==2.0.2
+numpy<2
 packaging==24.2
 pandas==2.3.1
 pillow==11.0.0
@@ -27,6 +27,7 @@ pybind11==2.13.6
 pycparser==2.22
 pyparsing==3.2.0
 pyroomacoustics==0.8.3
+psutil==6.1.1
 pyserial==3.5
 python-dateutil==2.9.0.post0
 pytz==2025.2
@@ -45,3 +46,6 @@ typing_extensions==4.12.2
 tzdata==2025.2
 urllib3==2.2.3
 wheel==0.45.1
+spidev
+pyusb==1.1.0
+hydra-core

@@ -28,6 +28,7 @@ global fs, channels, radius, sos
 
 c = 343.0  # speed of sound
 fs = 16000  # sampling frequency
+print(f"Sampling Frequency: {fs} Hz")
 channels = 5
 radius = 0.0323  # radius of the microphone array in meters
 
@@ -100,17 +101,18 @@ def update_das(frame):
     #     end_idx = start_idx + trim_samples
 
     # trimmed_signal = in_sig[start_idx:end_idx, :]
-
-    theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter_UCA(
+    start_time = time.time()
+    theta, spatial_resp, f_spec_axis, spectrum, bands = higher_order_dmas_UCA(
         in_sig,
         fs,
         4,
         radius,
         45,
-        [1000, 3000],
+        [500, 3000],
         np.linspace(0, 360, 361),
         show=False,
     )
+    print(f"DAS processing time: {time.time() - start_time:.6f} seconds")
 
     peaks, _ = signal.find_peaks(spatial_resp)
 
@@ -124,6 +126,73 @@ def update_das(frame):
     peak_angles = theta[peaks[top_n_peak_indices]]
 
     return peak_angles, spatial_resp
+
+
+# def update_das_dmas(frame):
+
+
+#     image_db = calculateAcousticImage(
+#         in_sig, mic_pos, scan_pts, fs, c, template=sweep, mf_method="PHAT"
+#     )
+
+
+#     try:
+#         in_sig = q.get_nowait()
+#     except queue.Empty:
+#         return None
+
+#     in_sig = signal.sosfiltfilt(sos, in_sig, axis=0)
+#     in_sig = in_sig[
+#         :, 1:5
+#     ]  # ReSpeaker 4-mic array: use channels 1 to 4 for the processing; ch0=summed signal from all mics, ch5 = speaker out signal
+
+#     # # Filter the input with its envelope on ref channel
+#     # filtered_envelope = np.abs(signal.hilbert(in_sig[:, 1], axis=0))
+
+#     # max_envelope_idx = np.argmax(filtered_envelope)
+
+#     # # Trim all channels around the max
+#     # trim_ms = 10  # ms
+#     # trim_samples = int(fs * trim_ms)
+#     # half_trim = trim_samples // 2
+#     # trimmed_signal = np.zeros((trim_samples, in_sig.shape[1]), dtype=in_sig.dtype)
+
+#     # # Ensure trimmed_signal always has exactly trim_samples rows (matching trim_ms duration)
+#     # if max_envelope_idx - half_trim < 0:
+#     #     start_idx = 0
+#     #     end_idx = trim_samples
+#     # elif max_envelope_idx + half_trim > in_sig.shape[0]:
+#     #     end_idx = in_sig.shape[0]
+#     #     start_idx = end_idx - trim_samples
+#     # else:
+#     #     start_idx = max_envelope_idx - half_trim
+#     #     end_idx = start_idx + trim_samples
+
+#     # trimmed_signal = in_sig[start_idx:end_idx, :]
+
+#     theta, spatial_resp, f_spec_axis, spectrum, bands = das_filter_UCA(
+#         in_sig,
+#         fs,
+#         4,
+#         radius,
+#         45,
+#         [100, 7500],
+#         np.linspace(0, 360, 361),
+#         show=True,
+#     )
+
+#     peaks, _ = signal.find_peaks(spatial_resp)
+
+#     peak_angles = theta[peaks]
+#     N = 1  # Number of peaks to keep
+
+#     # Sort peaks by their height and keep the N largest ones
+#     peak_heights = spatial_resp[peaks]
+#     top_n_peak_indices = np.argsort(peak_heights)[-N:]
+#     top_n_peak_indices = top_n_peak_indices[::-1]
+#     peak_angles = theta[peaks[top_n_peak_indices]]
+
+#     return peak_angles, spatial_resp
 
 
 #####################################333
@@ -149,15 +218,17 @@ def update_das(frame):
 # --- 1. Setup the Plotting Environment ---
 fig2 = plt.figure(figsize=(8, 8))
 ax2 = fig2.add_subplot(111, projection="polar")
+ax2.set_title("Spatial Response (Polar View)", va="bottom", fontsize=20)
 
 # Standard orientation for DOA: 0° at Top (North), Clockwise
 ax2.set_theta_zero_location("N")
 ax2.set_theta_direction(-1)
 ax2.set_ylim(0, 1.1)  # Assuming normalized response; adjust if necessary
 
+
 # Initialize plot objects
-(line,) = ax2.plot([], [], lw=1.5, color="blue", label="Spatial Response")
-(peak_dots,) = ax2.plot([], [], "r+", markersize=8, label="Detected Peaks")
+(line,) = ax2.plot([], [], lw=2.5, color="blue", label="Spatial Response")
+(peak_dots,) = ax2.plot([], [], "r+", markersize=20, label="Detected Peaks")
 ax2.legend(loc="lower right")
 
 
@@ -234,14 +305,13 @@ def animate_polar(frame):
 
 #     return line, peak_dots
 
-
 # --- 3. Execute Animation ---
 # Start the audio stream
 stream = sd.InputStream(
     device=usb_card_index,
     samplerate=fs,
     channels=channels,
-    blocksize=512,
+    blocksize=64,
     callback=audio_callback,
 )
 

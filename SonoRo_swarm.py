@@ -171,9 +171,11 @@ c = 343  # speed of sound
 fs = 48000
 radius = 0.0323  # radius of the UCA in meters
 shift = 45  # degrees of shift of mics wrt 0 angle
+call_rate = 4  # calls per second, used to calculate the inter-call interval (IPI)
+IPI = 1 / call_rate  # inter-call interval in seconds
 
 rec_samplerate = fs
-input_buffer_time = 0.03  # seconds
+input_buffer_time = IPI * 0.1  # seconds
 block_size = int(
     input_buffer_time * fs
 )  # used for the shared queue from which the doa is computed, not anymore for the output stream
@@ -202,7 +204,9 @@ if behaviour == "attraction":
 elif behaviour == "repulsion":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "dynamic_movement":
-    silence_post = 100  # [ms] can probably pushed to 20
+    silence_post = (
+        duration_out * 1000 + 20
+    )  # [ms](duration of the chirp + 30ms of estimated time for the DAC to output the signal)
 
 if behaviour == "attraction":
     amplitude = 0  # Amplitude of the chirp
@@ -212,7 +216,7 @@ elif behaviour == "dynamic_movement":
     amplitude = 0.5  # Amplitude of the chirp
 
 t = np.linspace(0, duration_out, int(fs * duration_out))
-start_f, end_f = 8e3, 2e2
+start_f, end_f = 20e3, 2e3
 sweep = signal.chirp(t, start_f, t[-1], end_f)
 sweep *= signal.windows.tukey(sweep.size, 0.2)
 sweep *= 0.8
@@ -249,7 +253,7 @@ block_size_analyzed_buffer = int(analyzed_buffer_time * fs)
 in_sig = np.zeros(
     block_size_analyzed_buffer, dtype=np.float32
 )  # Initialize the buffer for the audio input stream
-print("in_sig shape:", np.shape(in_sig))
+# print("in_sig shape:", np.shape(in_sig))
 centrefreqs, freqrms = calc_native_freqwise_rms(in_sig, fs)
 
 freqs = np.array(sensitivity.iloc[:, 0])  # first column contains frequencies
@@ -292,6 +296,8 @@ if __name__ == "__main__":
     args.rec_samplerate = rec_samplerate
     args.angle = 0
     args.subtype = None
+    args.filename = None
+    args.timestamp_filename = None
 
     # Set general save path
     time1 = startime.strftime("%Y-%m-%d")
@@ -400,16 +406,18 @@ if __name__ == "__main__":
 
     # timestamp_queue.put([audio_processor.ts_queue.get(), 0, 'recording_start'])
     timestamp_queue.put([audio_processor.ts_queue.get(), 0, 0, "recording_start"])
+    end_time = time.time()
     try:
         while True:
             start_time = time.time()
             event.clear()
-            timestamp = datetime.datetime.timestamp(
-                datetime.datetime.now(datetime.timezone.utc)
-            )  # POSIX timestamp
-            timestamp_queue.put(
-                [timestamp, 0, 0, "output_start"]
-            )  # Put the timestamp in the queue (no block=False, keeps all values)
+            if timestamp_bool == True:
+                timestamp = datetime.datetime.timestamp(
+                    datetime.datetime.now(datetime.timezone.utc)
+                )  # POSIX timestamp
+                timestamp_queue.put(
+                    [timestamp, 0, 0, "output_start"]
+                )  # Put the timestamp in the queue (no block=False, keeps all values)
             with sd.OutputStream(
                 samplerate=fs,
                 blocksize=0,
@@ -422,46 +430,25 @@ if __name__ == "__main__":
                 with out_stream:
                     event.wait()
 
-                    if method == "CC":
-                        time.sleep(input_buffer_time * 2.3)
-
             if method == "DAS":
+                time.sleep((IPI - (time.time() - end_time)))
+
+                print(time.time() - end_time)
+                end_time = time.time()
                 # timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S:%f')[:-3]  # Format timestamp to milliseconds
                 timestamp = datetime.datetime.timestamp(
                     datetime.datetime.now(datetime.timezone.utc)
                 )  # POSIX timestamp
-                args.angle, dB_SPL_level = audio_processor.update_das()
-                timestamp_queue.put(
-                    [timestamp, dB_SPL_level[0], args.angle]
-                )  # Put the timestamp in the queue (no block=False, keeps all values)
-                # args.angle, dB_SPL_level = audio_processor.update_das_UCA()
+                # args.angle, dB_SPL_level = audio_processor.update_das()
+                # timestamp_queue.put(
+                #     [timestamp, dB_SPL_level[0], args.angle]
+                # )  # Put the timestamp in the queue (no block=False, keeps all values)
+                args.angle, dB_SPL_level = audio_processor.update_das_UCA()
                 # #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
 
                 angle_queue.put(args.angle)
                 level_queue.put(dB_SPL_level)
                 print("Angle:", args.angle, "dB SPL:", dB_SPL_level[0])
-
-            elif method == "CC":
-                # timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S:%f')[:-3]  # Format timestamp to milliseconds
-                timestamp = datetime.datetime.timestamp(
-                    datetime.datetime.now(datetime.timezone.utc)
-                )  # POSIX timestamp
-
-                args.angle, dB_SPL_level = audio_processor.update_das()
-                timestamp_queue.put(
-                    [timestamp, dB_SPL_level[0], args.angle]
-                )  # Put the timestamp in the queue (no block=False, keeps all values)
-                np.save(
-                    npy_data,
-                    np.array([timestamp, dB_SPL_level[0], args.angle], dtype=object),
-                )
-                args.angle, dB_SPL_level = audio_processor.update_CC()
-                angle_queue.put(args.angle)
-                level_queue.put(dB_SPL_level)
-
-                if isinstance(args.angle, (int, float, np.number)):
-                    if np.isnan(args.angle):
-                        angle_queue.put(None)
 
             else:
                 print("No valid method provided")
@@ -469,34 +456,34 @@ if __name__ == "__main__":
 
     except Exception as e:
         robot_move.stop()
-
-        # Collect all remaining items from the queue and append to existing npy data
-        remaining_data = []
-        while not timestamp_queue.empty():
-            remaining_data.append(timestamp_queue.get())
-        if remaining_data:
-            # Load existing data if file exists
-            if os.path.exists(npy_data + ".npy"):
-                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
-                # Ensure existing_data is always a list of records
-                if existing_data.ndim == 1 and isinstance(
-                    existing_data[0], (list, np.ndarray)
-                ):
-                    combined_data = np.concatenate(
-                        [existing_data, remaining_data], axis=0
-                    )
+        if timestamp_bool == True:
+            # Collect all remaining items from the queue and append to existing npy data
+            remaining_data = []
+            while not timestamp_queue.empty():
+                remaining_data.append(timestamp_queue.get())
+            if remaining_data:
+                # Load existing data if file exists
+                if os.path.exists(npy_data + ".npy"):
+                    existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                    # Ensure existing_data is always a list of records
+                    if existing_data.ndim == 1 and isinstance(
+                        existing_data[0], (list, np.ndarray)
+                    ):
+                        combined_data = np.concatenate(
+                            [existing_data, remaining_data], axis=0
+                        )
+                    else:
+                        combined_data = np.array(
+                            [existing_data] + remaining_data, dtype=object
+                        )
                 else:
-                    combined_data = np.array(
-                        [existing_data] + remaining_data, dtype=object
-                    )
-            else:
-                combined_data = np.array(remaining_data, dtype=object)
-            np.save(npy_data, combined_data)
-        print(f"\nMatrix has been saved to npy at {npy_data}\n")
+                    combined_data = np.array(remaining_data, dtype=object)
+                np.save(npy_data, combined_data)
+            print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
         inputstream_thread.join()
-
-        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
+        if recording_bool == True:
+            print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
@@ -504,34 +491,34 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         robot_move.stop()
-
-        # Collect all remaining items from the queue and append to existing npy data
-        remaining_data = []
-        while not timestamp_queue.empty():
-            remaining_data.append(timestamp_queue.get())
-        if remaining_data:
-            # Load existing data if file exists
-            if os.path.exists(npy_data + ".npy"):
-                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
-                # Ensure existing_data is always a list of records
-                if existing_data.ndim == 1 and isinstance(
-                    existing_data[0], (list, np.ndarray)
-                ):
-                    combined_data = np.concatenate(
-                        [existing_data, remaining_data], axis=0
-                    )
+        if timestamp_bool == True:
+            # Collect all remaining items from the queue and append to existing npy data
+            remaining_data = []
+            while not timestamp_queue.empty():
+                remaining_data.append(timestamp_queue.get())
+            if remaining_data:
+                # Load existing data if file exists
+                if os.path.exists(npy_data + ".npy"):
+                    existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                    # Ensure existing_data is always a list of records
+                    if existing_data.ndim == 1 and isinstance(
+                        existing_data[0], (list, np.ndarray)
+                    ):
+                        combined_data = np.concatenate(
+                            [existing_data, remaining_data], axis=0
+                        )
+                    else:
+                        combined_data = np.array(
+                            [existing_data] + remaining_data, dtype=object
+                        )
                 else:
-                    combined_data = np.array(
-                        [existing_data] + remaining_data, dtype=object
-                    )
-            else:
-                combined_data = np.array(remaining_data, dtype=object)
-            np.save(npy_data, combined_data)
-        print(f"\nMatrix has been saved to npy at {npy_data}\n")
-        robot_move.running = False
+                    combined_data = np.array(remaining_data, dtype=object)
+                np.save(npy_data, combined_data)
+            print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
-        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         inputstream_thread.join()
+        if recording_bool == True:
+            print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()

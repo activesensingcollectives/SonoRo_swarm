@@ -210,3 +210,6 @@ __marimo__/
 
 *.pyc
 /docs/build
+*.yaml
+*.wav
+*.npy

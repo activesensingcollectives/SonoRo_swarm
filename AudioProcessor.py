@@ -214,12 +214,13 @@ class AudioProcessor:
             device=self.soundcard_index,
             channels=self.channels,
             callback=self.callback_in,
-            blocksize=int(self.fs // 1000),  # 1ms blocks for more real-time
+            blocksize=int(
+                self.fs // 1000,
+            ),  # 1ms blocks for more real-time
         ):
             timestamp = datetime.datetime.timestamp(
                 datetime.datetime.now(datetime.timezone.utc)
             )
-            print(f"Recording started at {timestamp}\n")
             self.ts_queue.put(timestamp)
 
     def callback_out(self, outdata, frames, time, status):
@@ -292,15 +293,15 @@ class AudioProcessor:
         """
         # Push the new chunk (n, channels) to the vertical stack
         self.stack = np.vstack((self.stack, indata))
-        # print(
-        #     f"Received audio block with shape {indata.shape}. Current stack size: {self.stack.shape[0]} rows."
-        # )
+        print(
+            f"Received audio block with shape {indata.shape}. Current stack size: {self.stack.shape[0]} rows."
+        )
         # If the stack gets too tall, slice off the top (the oldest data)
         if self.stack.shape[0] > self.max_rows:
             self.stack = self.stack[-self.max_rows :]
-            # print(
-            #     f"Stack exceeded max history. Oldest data discarded. Current stack size: {self.stack.shape[0]} rows."
-            # )
+            print(
+                f"Stack exceeded max history. Oldest data discarded. Current stack size: {self.stack.shape[0]} rows."
+            )
 
         self.shared_audio_queue.put((indata).copy())
 
@@ -313,10 +314,7 @@ class AudioProcessor:
 
         # Check if the stack has accumulated enough time/data yet
         if num_rows > self.stack.shape[0]:
-            print(
-                f"Warning: Requested {self.analyzed_buffer_time}ms but stack only has {self.stack.shape[0] / self.fs}sec"
-            )
-            return None
+            raise RuntimeError("Insufficient data in stack for processing")
 
         # Extract the last 'num_rows' (Newest data / LIFO)
         chunk = self.stack[-num_rows:].copy()
@@ -354,10 +352,6 @@ class AudioProcessor:
         self.tgtmic_relevant_freqs : list or numpy.ndarray
             Indices of relevant frequency bands for the target microphone.
         self.trigger_level : float
-            Threshold level for triggering angle calculation.
-        self.critical_level : float
-            Critical threshold level for angle calculation.
-        self.channels : int
             Number of audio channels.
         self.mic_spacing : float
             Spacing between microphones for delay calculation.

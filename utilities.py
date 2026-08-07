@@ -676,7 +676,7 @@ def das_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False):
     for b_idx, f_idx in enumerate(band_idxs):
         spec = spectrum[f_idx, :, :]  # (bands, nch, n_frames(time))
         cov_est = np.cov(spec, bias=True)
-        print("spec shape", spec.shape)
+        # print("spec shape", spec.shape)
 
         a = a_mat[:, b_idx, :]  # (nch, n_theta)
         a_H = a_H_mat[b_idx, :, :]  # (n_theta, nch)
@@ -937,7 +937,7 @@ def dmas_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False)
 
 
 def higher_order_dmas_UCA(
-    y, fs, nch, r, shift, bw, theta, c=343, wlen=64, order=3, apply_cf=True, show=False
+    y, fs, nch, r, shift, bw, theta, c=343, wlen=64, order=2, apply_cf=True, show=False
 ):
     """
     Multiband Higher-Order Delay Multiply and Sum (p-DMAS) for a Uniform Circular Array,
@@ -1065,3 +1065,16 @@ def higher_order_dmas_UCA(
         plt.show()
 
     return theta, mag_p, f_spec_axis, spectrum, bands
+
+
+# Thymio robot control functions
+
+
+def perc_to_speed(value):
+    """Map a value in range [0,100] = percentage speed to [0,500] = [min, max] values that Thymio takes as speed control. Clamp input to [0,100]. Returns int."""
+    try:
+        v = float(value)
+    except Exception:
+        v = 0.0
+    v = max(0.0, min(100.0, v))
+    return int(round((v / 100.0) * 500.0))

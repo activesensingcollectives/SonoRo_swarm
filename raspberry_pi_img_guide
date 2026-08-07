@@ -1,0 +1,37 @@
+Backing up your Raspberry Pi SD Card on Linux
+1. Before starting to backup up your Raspberry Pi’s SD Card on Linux we will first run the df command with the reader not plugged in.
+
+The reason for this makes it much easier to see which device is which.
+
+df -h
+This command will return something like what is shown below.
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        15G  4.0G  9.6G  29% /
+devtmpfs        458M     0  458M   0% /dev
+/dev/mmcblk0p1   41M   21M   21M  52% /boot
+2. Now insert your SD Card reader back into your Linux computer and again rerun the following command, but this time take note of the additional entries.
+
+df -h
+This command will return something like what you got above, but with an additional entry, in our case “/dev/sda1” is that additional entry, with your entry, remove the partition number.
+
+For instance, “/dev/sda1” will become “/dev/sda“. We need to do this as we want to write to the entire drive and not just a singular partition.
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        15G  4.0G  9.6G  29% /
+devtmpfs        458M     0  458M   0% /dev
+/dev/mmcblk0p1   41M   21M   21M  52% /boot
+/dev/sda1       3.7G   75M  3.6G   3% /media/boot
+
+3. We can now utilize dd, the same tool we make use of on Mac OS X since it is also built on Unix.
+
+We can utilize the following command to begin dumping the SD Cards image to our home directory.
+
+Make sure you replace “/dev/sda” with the filesystem that you grabbed using the “df -h” command.
+
+sudo dd if=/dev/sda of=~/PiSDBackup.img status=progress
+The process of backing up your Raspberry Pi can take some serious time, so be patient and wait.
+
+The dd tool provides no feedback, so you will have to wait until the input command returns to your terminal.
+
+Once it reappears, you will have successfully backed up your Raspberry Pi.

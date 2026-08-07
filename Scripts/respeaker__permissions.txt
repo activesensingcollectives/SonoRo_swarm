@@ -1,0 +1,16 @@
+To allow lightting the LED on the respeaker the following commands are necessary:
+
+    sudo nano /etc/udev/rules.d/99-respeaker.rules
+
+insert the following as 1st line:
+
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="0018", MODE="0666"
+
+save and exit
+
+type in terminal:
+
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+
+unplug and reconnet respeaker if necessary
