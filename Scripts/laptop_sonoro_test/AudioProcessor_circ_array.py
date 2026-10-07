@@ -8,7 +8,7 @@ email: alberto.doimo@uni-konstanz.de
 
 """
 
-from utilities import *
+from . import utilities
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
@@ -45,6 +45,7 @@ class AudioProcessor:
         rec_samplerate,
         DOA_freq_range,
         sos,
+        beamformer=None,
     ):
         self.fs = fs
         self.channels = channels
@@ -67,6 +68,7 @@ class AudioProcessor:
         self.rec_samplerate = rec_samplerate
         self.DOA_freq_range = DOA_freq_range
         self.sos = sos
+        self.beamformer = beamformer
 
         self.current_frame = 0
         self.shared_audio_queue = queue.Queue()
@@ -368,7 +370,7 @@ class AudioProcessor:
 
         trimmed_signal = in_sig[start_idx:end_idx, :]
 
-        centrefreqs, freqrms = calc_native_freqwise_rms(
+        centrefreqs, freqrms = utilities.calc_native_freqwise_rms(
             trimmed_signal[:, self.ref], self.fs
         )
         freqwise_Parms = freqrms / self.interp_sensitivity
@@ -380,23 +382,17 @@ class AudioProcessor:
         total_rms_freqwise_Parms = np.sqrt(
             np.sum(freqwise_Parms[self.tgtmic_relevant_freqs] ** 2)
         )
-        dB_SPL_level = pascal_to_dbspl(
+        dB_SPL_level = utilities.pascal_to_dbspl(
             total_rms_freqwise_Parms
         )  # dB SPL level for reference channel
 
         start_time = time.time()
-        theta, spatial_resp, f_spec_axis, spectrum, bands = higher_order_dmas_UCA(
-            trimmed_signal,
-            self.fs,
-            self.channels - 1,
-            self.radius,
-            self.shift,
-            self.DOA_freq_range,
-            theta=self.theta_das,
-            show=False,
+        theta, spatial_resp, f_spec_axis, spectrum, bands = (
+            self.beamformer.das_filter_UCA_motor_whitened(trimmed_signal, show=False)
         )
         # print("das time:", time.time() - start_time)
-        peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
+        # peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
+        peaks = utilities.find_peaks_circular(spatial_resp, wrap=3)
 
         peak_angles = theta[peaks]
         N = self.N_peaks  # Number of peaks to keep
@@ -409,6 +405,9 @@ class AudioProcessor:
         top_n_peak_indices = top_n_peak_indices[::-1]
         peak_angles = theta[peaks[top_n_peak_indices]]  # Corresponding angles
 
+        # print(
+        #     f"Spatial response peak intensity value: {spatial_resp[peaks[top_n_peak_indices]]} at angle: {peak_angles}"
+        # )
         if self.N_peaks == 1:
             if (
                 dB_SPL_level > self.trigger_level or dB_SPL_level > self.critical_level

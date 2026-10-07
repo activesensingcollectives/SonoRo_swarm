@@ -8,7 +8,7 @@ email: alberto.doimo@uni-konstanz.de
 
 """
 
-from utilities import *
+from Scripts.linear_sonoro.utilities import *
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd

@@ -20,7 +20,7 @@ import queue
 from matplotlib.animation import FuncAnimation
 
 # "functions" directory must be in the same path of this file
-from utilities import *
+from Scripts.linear_sonoro.utilities import *
 
 # Define DAS filter function
 # Constants

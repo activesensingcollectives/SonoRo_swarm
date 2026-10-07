@@ -33,6 +33,7 @@ from tracemalloc import start
 from omegaconf import OmegaConf, DictConfig
 import numpy as np
 import matplotlib.pyplot as plt
+import signal as std_signal
 import scipy.signal as signal
 import sounddevice as sd
 import soundfile as sf
@@ -43,6 +44,7 @@ import time
 import os
 import threading
 import pandas as pd
+import socket
 import netifaces as ni
 import hydra
 
@@ -50,9 +52,33 @@ from utilities import *
 
 from AudioProcessor_circ_array import AudioProcessor
 from RobotMove_circ import RobotMove
-from shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
+from shared_queues import (
+    angle_queue,
+    level_queue,
+    angle_queue_led,
+    level_queue_led,
+)
 
 print("imports done")
+
+
+def get_local_ip(interface: str = "wlan0") -> str:
+    """Safely get local IPv4 address with multiple fallbacks."""
+    try:
+        addrs = ni.ifaddresses(interface)
+        if ni.AF_INET in addrs and addrs[ni.AF_INET]:
+            return addrs[ni.AF_INET][0]["addr"]
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 
 ###############################################################################
 # SETUP PARAMETERS
@@ -80,8 +106,7 @@ soundcard_index = get_card(sd.query_devices(), "ReSpeaker")
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
-ni.ifaddresses("wlan0")
-raspi_local_ip = ni.ifaddresses("wlan0")[2][0]["addr"]
+raspi_local_ip = get_local_ip("wlan0")
 print("raspi_local_ip =", raspi_local_ip)
 
 
@@ -263,7 +288,23 @@ def main(cfg: DictConfig) -> None:
         native_cfg["critical_level"],
         native_cfg["trigger_level"],
         ground_sensors_bool=True,
+        angle_shift=native_cfg.get("shift", -45),
     )
+
+    def _sig_shutdown_handler(signum, frame):
+        print(f"\n[Shutdown] Received signal {signum}, stopping robot cleanly...")
+        try:
+            robot_move.stop()
+        except Exception:
+            pass
+        raise KeyboardInterrupt
+
+    std_signal.signal(std_signal.SIGTERM, _sig_shutdown_handler)
+    std_signal.signal(std_signal.SIGINT, _sig_shutdown_handler)
+    try:
+        std_signal.signal(std_signal.SIGHUP, _sig_shutdown_handler)
+    except AttributeError:
+        pass
 
     # Create threads for the audio input and recording
     if recording_bool == True:
@@ -290,6 +331,24 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(folder_path, exist_ok=True)
     name = "TIMESTAMPS_" + str(raspi_local_ip) + str(time2)
     npy_data = os.path.join(folder_path, name)
+
+    # Synchronized swarm start barrier
+    target_start_epoch = float(os.environ.get("SWARM_START_TIME", 0))
+    if target_start_epoch > 0:
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        wait_seconds = target_start_epoch - now
+        if wait_seconds > 0:
+            print(
+                f"[Sync] Waiting {wait_seconds:.2f}s for synchronized start at UTC epoch {target_start_epoch:.2f}..."
+            )
+            time.sleep(wait_seconds)
+            print(
+                f"[Sync] Synchronized start triggered at UTC {datetime.datetime.now(datetime.timezone.utc).strftime('%H:%M:%S.%f')[:-3]}!"
+            )
+        else:
+            print(
+                f"[Sync Warning] Initialization took {-wait_seconds:.2f}s longer than planned start time."
+            )
 
     # timestamp_queue.put([audio_processor.ts_queue.get(), 0, 'recording_start'])
     timestamp_queue.put([audio_processor.ts_queue.get(), 0, 0, "recording_start"])
@@ -383,14 +442,18 @@ def main(cfg: DictConfig) -> None:
             np.save(npy_data, combined_data)
         print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
-        inputstream_thread.join()
+        robot_move.running = False
+        audio_processor.stop()
+        inputstream_thread.join(timeout=1.0)
 
         print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
-        move_thread.join()
+        move_thread.join(timeout=1.0)
         parser.exit(type(e).__name__ + ": " + str(e))
 
     except KeyboardInterrupt:
         robot_move.stop()
+        robot_move.running = False
+        audio_processor.stop()
 
         # Collect all remaining items from the queue and append to existing npy data
         remaining_data = []
@@ -415,14 +478,11 @@ def main(cfg: DictConfig) -> None:
                 combined_data = np.array(remaining_data, dtype=object)
             np.save(npy_data, combined_data)
         print(f"\nMatrix has been saved to npy at {npy_data}\n")
-        robot_move.running = False
 
         print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
-        inputstream_thread.join()
-        move_thread.join()
+        inputstream_thread.join(timeout=1.0)
+        move_thread.join(timeout=1.0)
         parser.exit("KeyboardInterrupt")
-        if "led_controller" in locals():
-            led_controller.stop()
 
 
 if __name__ == "__main__":

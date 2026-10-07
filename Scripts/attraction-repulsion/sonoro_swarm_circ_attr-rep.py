@@ -36,6 +36,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import signal as std_signal
 import scipy.signal as signal
 import sounddevice as sd
 import soundfile as sf
@@ -49,16 +50,40 @@ import threading
 import pandas as pd
 
 # import psutil
+import socket
 import netifaces as ni
 import hydra
 
-from utilities import *
+import utilities
 
 from AudioProcessor_circ_array import AudioProcessor
 from RobotMove_circ import RobotMove
-from shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
+from shared_queues import (
+    angle_queue,
+    level_queue,
+    angle_queue_led,
+    level_queue_led,
+)
 
 print("imports done")
+
+
+def get_local_ip(interface: str = "wlan0") -> str:
+    """Safely get local IPv4 address with multiple fallbacks."""
+    try:
+        addrs = ni.ifaddresses(interface)
+        if ni.AF_INET in addrs and addrs[ni.AF_INET]:
+            return addrs[ni.AF_INET][0]["addr"]
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def get_temperature_celsius() -> float | None:
@@ -156,12 +181,11 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices(), "ReSpeaker")
+soundcard_index = utilities.get_card(sd.query_devices(), "ReSpeaker")
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
-ni.ifaddresses("wlan0")
-raspi_local_ip = ni.ifaddresses("wlan0")[2][0]["addr"]
+raspi_local_ip = get_local_ip("wlan0")
 print("raspi_local_ip =", raspi_local_ip)
 
 
@@ -195,7 +219,7 @@ def main(cfg: DictConfig) -> None:
     ICI = 1 / native_cfg["call_rate"]  # inter-call interval in seconds
 
     input_buffer_time = (
-        ICI - native_cfg["duration_out"] - 50e-3 - 50e-3 - 40e-3
+        ICI - native_cfg["duration_out"] - 50e-3 - 50e-3 - 20e-3
     )  # seconds
     print("input_buffer_time =", input_buffer_time)
     block_size = int(
@@ -210,7 +234,7 @@ def main(cfg: DictConfig) -> None:
     )  # (start, end, step)
 
     silence_post = (
-        native_cfg["duration_out"] * 1000 + 40
+        native_cfg["duration_out"] * 1000 + 30
     )  # [ms](duration of the chirp + 30ms of estimated time for the DAC to output the signal)
 
     t = np.linspace(
@@ -235,9 +259,12 @@ def main(cfg: DictConfig) -> None:
 
     # Set the path for the sensitivity CSV file relative to the current script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    sensitivity_path = os.path.join(script_dir, "Knowles_SPH0645LM4H-B_sensitivity.csv")
+    # sensitivity_path = os.path.join(script_dir, "Knowles_SPH0645LM4H-B_sensitivity.csv")
+    sensitivity_path = os.path.join(
+        script_dir, "Null_sensitivity.csv"
+    )  # no sensitivity compensation applied for the laptop test
     sensitivity = pd.read_csv(sensitivity_path)
-    print(sensitivity.head())  # Print the first few rows of the sensitivity DataFrame
+    # print(sensitivity.head())  # Print the first few rows of the sensitivity DataFrame
 
     block_size_analyzed_buffer = int(
         native_cfg["analyzed_buffer_time"] * native_cfg["fs"]
@@ -250,30 +277,33 @@ def main(cfg: DictConfig) -> None:
         block_size_analyzed_buffer, dtype=np.float32
     )  # Initialize the buffer for the audio input stream
     print("in_sig shape:", np.shape(in_sig))
-    centrefreqs, freqrms = calc_native_freqwise_rms(in_sig, native_cfg["fs"])
+    centrefreqs, freqrms = utilities.calc_native_freqwise_rms(in_sig, native_cfg["fs"])
 
     freqs = np.array(sensitivity.iloc[:, 0])  # first column contains frequencies
     sens_freqwise_rms = np.array(
         sensitivity.iloc[:, 1]
     )  # Last column contains sensitivity values
 
-    interp_sensitivity = interpolate_freq_response(
+    interp_sensitivity = utilities.interpolate_freq_response(
         [freqs, sens_freqwise_rms], centrefreqs
     )
 
-    print("Interpolated sensitivity values for the center frequencies:")
-    for freq, sens in zip(centrefreqs, interp_sensitivity):
-        print(f"Frequency: {freq:.2f} Hz, Sensitivity: {sens:.4f}")
+    # print("Interpolated sensitivity values for the center frequencies:")
+    # for freq, sens in zip(centrefreqs, interp_sensitivity):
+    #     print(f"Frequency: {freq:.2f} Hz, Sensitivity: {sens:.4f}")
 
-    frequency_band = [2e3, 20e3]  # min, max frequency to do the compensation Hz
+    frequency_band = [
+        native_cfg["doa_freq_range"][0],
+        native_cfg["doa_freq_range"][1],
+    ]  # min, max frequency to do the compensation Hz
     tgtmic_relevant_freqs = np.logical_and(
         centrefreqs >= frequency_band[0], centrefreqs <= frequency_band[1]
     )
     # Thymio movement parameters
-    speed = perc_to_speed(
+    speed = utilities.perc_to_speed(
         native_cfg["speed_percent"]
     )  # Map 0-100 perc speed to thymio range (0-500)
-    turn_speed = perc_to_speed(native_cfg["turn_speed_percent"])
+    turn_speed = utilities.perc_to_speed(native_cfg["turn_speed_percent"])
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -317,6 +347,112 @@ def main(cfg: DictConfig) -> None:
         args.timestamp_filename = os.path.join(folder_path, name)
 
     # Create instances of the AudioProcessor and RobotMove classes
+
+    robot_move = RobotMove(
+        speed,
+        turn_speed,
+        native_cfg["turn_angle"],
+        native_cfg["left_sensor_threshold"],
+        native_cfg["right_sensor_threshold"],
+        native_cfg["critical_level"],
+        native_cfg["trigger_level"],
+        ground_sensors_bool=True,
+        angle_shift=native_cfg.get("shift", -45),
+    )
+
+    def _sig_shutdown_handler(signum, frame):
+        print(f"\n[Shutdown] Received signal {signum}, stopping robot cleanly...")
+        try:
+            robot_move.stop()
+        except Exception:
+            pass
+        raise KeyboardInterrupt
+
+    std_signal.signal(std_signal.SIGTERM, _sig_shutdown_handler)
+    std_signal.signal(std_signal.SIGINT, _sig_shutdown_handler)
+    try:
+        std_signal.signal(std_signal.SIGHUP, _sig_shutdown_handler)
+    except AttributeError:
+        pass
+
+    # # ========================================================================
+    # # NOISE CALIBRATION STEP
+    # # Robot spins in place with varying speed while recording gear noise.
+    # # After calibration, robot stops and whitening matrices are computed.
+    # # ========================================================================
+
+    # print("\n" + "=" * 60)
+    # print("STARTING NOISE CALIBRATION")
+    # print("Robot will rotate in place with varying speed...")
+    # print("=" * 60 + "\n")
+
+    # calib_duration = native_cfg.get("calib_duration_s", 12.0)  # seconds
+    # calib_wlen = native_cfg.get("calib_wlen", 64)
+
+    # calib_buffer_list = []
+
+    # def _calib_audio_callback(indata, frames, time_info, status):
+    #     if status:
+    #         print("Calibration stream status:", status)
+    #     calib_buffer_list.append(indata.copy())
+
+    # def _spin_robot_variable_speed(robot_move_obj, duration, base_turn_speed):
+    #     start = time.time()
+    #     while time.time() - start < duration:
+    #         elapsed = time.time() - start
+    #         speed_factor = 0.4 + 0.6 * (0.5 * (1 + np.sin(2 * np.pi * elapsed / 4.0)))
+    #         current_speed = int(base_turn_speed * speed_factor)
+    #         robot_move_obj.robot["motor.right.target"] = current_speed
+    #         robot_move_obj.robot["motor.left.target"] = -current_speed
+    #         time.sleep(0.1)
+    #     robot_move_obj.stop()
+
+    # calib_stream = sd.InputStream(
+    #     samplerate=native_cfg["fs"],
+    #     channels=native_cfg["channels"],
+    #     device=soundcard_index,
+    #     callback=_calib_audio_callback,
+    # )
+
+    # with calib_stream:
+    #     spin_thread = threading.Thread(
+    #         target=_spin_robot_variable_speed,
+    #         args=(robot_move, calib_duration, utilities.perc_to_speed(100)),
+    #     )
+    #     spin_thread.start()
+    #     spin_thread.join()
+    #     time.sleep(0.2)
+
+    # robot_move.stop()
+    # print("Calibration rotation complete, robot stopped.\n")
+
+    # noise_calib_audio = np.concatenate(calib_buffer_list, axis=0)
+    # noise_calib_audio_doa = noise_calib_audio[:, 1:5]  # match runtime exactly
+
+    # print(f"Calibration audio captured: shape = {noise_calib_audio_doa.shape}")
+
+    # beamformer = utilities.WhitenedUCABeamformer(
+    #     fs=native_cfg["fs"],
+    #     nch=4,
+    #     r=native_cfg["radius"],
+    #     shift=native_cfg["shift"],
+    #     bw=native_cfg["doa_freq_range"],
+    #     theta=theta_das,
+    #     wlen=native_cfg.get("wlen"),
+    #     nfft=native_cfg.get("nfft"),
+    # )
+    # beamformer.calibrate(noise_calib_audio_doa)
+
+    # beamformer.plot_calibration_diagnostics(save_dir=folder_path, prefix="calib")
+
+    # print("=" * 60)
+    # print("NOISE CALIBRATION COMPLETE — starting experiment")
+    # print("=" * 60 + "\n")
+
+    # # ========================================================================
+    # # END NOISE CALIBRATION STEP
+    # # ========================================================================
+
     audio_processor = AudioProcessor(
         native_cfg["fs"],
         native_cfg["channels"],
@@ -339,16 +475,6 @@ def main(cfg: DictConfig) -> None:
         args.rec_samplerate,
         native_cfg["doa_freq_range"],
         sos,
-    )
-
-    robot_move = RobotMove(
-        speed,
-        turn_speed,
-        native_cfg["left_sensor_threshold"],
-        native_cfg["right_sensor_threshold"],
-        native_cfg["critical_level"],
-        native_cfg["trigger_level"],
-        ground_sensors_bool=True,
     )
 
     # Create threads for the audio input and recording
@@ -380,6 +506,24 @@ def main(cfg: DictConfig) -> None:
     name = "TIMESTAMPS_" + str(raspi_local_ip) + str(time2)
     npy_data = os.path.join(folder_path, name)
 
+    # Synchronized swarm start barrier
+    target_start_epoch = float(os.environ.get("SWARM_START_TIME", 0))
+    if target_start_epoch > 0:
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        wait_seconds = target_start_epoch - now
+        if wait_seconds > 0:
+            print(
+                f"[Sync] Waiting {wait_seconds:.2f}s for synchronized start at UTC epoch {target_start_epoch:.2f}..."
+            )
+            time.sleep(wait_seconds)
+            print(
+                f"[Sync] Synchronized start triggered at UTC {datetime.datetime.now(datetime.timezone.utc).strftime('%H:%M:%S.%f')[:-3]}!"
+            )
+        else:
+            print(
+                f"[Sync Warning] Initialization took {-wait_seconds:.2f}s longer than planned start time."
+            )
+
     # timestamp_queue.put([audio_processor.ts_queue.get(), 0, 'recording_start'])
     timestamp_queue.put([audio_processor.ts_queue.get(), 0, 0, "recording_start"])
     end_time = time.time()
@@ -407,7 +551,7 @@ def main(cfg: DictConfig) -> None:
                 with out_stream:
                     event.wait()
             # print(sd.check_output_settings())
-            # print("step 5: ", time.time() - time40)
+            # print("call duration: ", time.time() - start_time)
             # print("Total loop time: ", time.time() - end_time)
             # add a small random jitter to avoid strict periodic locking
             wait_time = ICI - (time.time() - end_time) + np.random.uniform(0, 0.05)
@@ -428,12 +572,8 @@ def main(cfg: DictConfig) -> None:
             # print("step 1", time.time() - end_time)
             time10 = time.time()
             args.angle, dB_SPL_level = audio_processor.update_das_UCA()
-            # print("step 2 = update das", time.time() - time10)
-            time20 = time.time()
-            # print("step 3", time.time() - time20)
+            # print("step 2 = update das", time.time() - end_time)
             timestamp_queue.put([timestamp, dB_SPL_level[0], args.angle])
-            time30 = time.time()
-            # print("step 4", time.time() - time30)
             time40 = time.time()
             angle_temp = args.angle[0]
             level_temp = dB_SPL_level[0]
@@ -441,8 +581,10 @@ def main(cfg: DictConfig) -> None:
             level_queue.put(level_temp)
             angle_queue_led.put(angle_temp)
             level_queue_led.put(level_temp)
+            print("\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
+
             if dB_SPL_level[0] >= native_cfg["trigger_level"]:
-                print("\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
+                print("REACTION:\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
 
             if time.time() - last_resource_report >= 1:
                 # cpu_percent = process.cpu_percent(None)
@@ -459,7 +601,7 @@ def main(cfg: DictConfig) -> None:
                     f"{temperature_c:.1f} C" if temperature_c is not None else "N/A"
                 )
                 throttle_text = get_pi_throttled_status()
-                print(f"CPU: | TEMP: {temperature_text} | THROTTLE: {throttle_text}")
+                # print(f"CPU: | TEMP: {temperature_text} | THROTTLE: {throttle_text}")
                 #     f"CPU: {cpu_percent:.1f}% | FREQ: {cpu_freq_text} | RAM: {ram_mb:.1f} MB ({ram_percent:.1f}%) | TEMP: {temperature_text} | THROTTLE: {throttle_text}"
                 # )
                 last_resource_report = time.time()
@@ -493,14 +635,18 @@ def main(cfg: DictConfig) -> None:
             np.save(npy_data, combined_data)
         print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
-        inputstream_thread.join()
+        robot_move.running = False
+        audio_processor.stop()
+        inputstream_thread.join(timeout=1.0)
 
         print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
-        move_thread.join()
+        move_thread.join(timeout=1.0)
         parser.exit(type(e).__name__ + ": " + str(e))
 
     except KeyboardInterrupt:
         robot_move.stop()
+        robot_move.running = False
+        audio_processor.stop()
 
         # Collect all remaining items from the queue and append to existing npy data
         remaining_data = []
@@ -525,14 +671,11 @@ def main(cfg: DictConfig) -> None:
                 combined_data = np.array(remaining_data, dtype=object)
             np.save(npy_data, combined_data)
         print(f"\nMatrix has been saved to npy at {npy_data}\n")
-        robot_move.running = False
 
         print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
-        inputstream_thread.join()
-        move_thread.join()
+        inputstream_thread.join(timeout=1.0)
+        move_thread.join(timeout=1.0)
         parser.exit("KeyboardInterrupt")
-        if "led_controller" in locals():
-            led_controller.stop()
 
 
 if __name__ == "__main__":

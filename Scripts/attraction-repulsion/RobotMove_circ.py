@@ -10,11 +10,33 @@ email: alberto.doimo@uni-konstanz.de
 
 from thymiodirect import Connection
 from thymiodirect import Thymio
-from shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
+from shared_queues import (
+    angle_queue,
+    level_queue,
+    angle_queue_led,
+    level_queue_led,
+)
 
 import time
 import random
 from SoundLEDController import SoundLEDController
+
+
+def clear_queue(q):
+    """Safely and thread-safely clear all items from a Queue/LifoQueue."""
+    try:
+        with q.mutex:
+            q.queue.clear()
+            if hasattr(q, "all_tasks_done"):
+                q.all_tasks_done.notify_all()
+            if hasattr(q, "not_full"):
+                q.not_full.notify_all()
+    except Exception:
+        while not q.empty():
+            try:
+                q.get_nowait()
+            except Exception:
+                break
 
 
 class RobotMove:
@@ -28,9 +50,9 @@ class RobotMove:
     turn_speed : in
         Target speed for rotational motor movement.
     left_sensor_threshold : int
-        Threshold value for left ground sensor to detect white lines.
+        Threshold value for left ground sensor to detect  lines.
     right_sensor_threshold : int
-        Threshold value for right ground sensor to detect white lines.
+        Threshold value for right ground sensor to detect  lines.
     trigger_level : float
         Sound pressure level (dB SPL) threshold to trigger detection.
     critical_level : float
@@ -55,11 +77,13 @@ class RobotMove:
         self,
         forward_speed,
         turn_speed,
+        turn_angle,
         left_sensor_threshold,
         right_sensor_threshold,
         critical_level,
         trigger_level,
         ground_sensors_bool=True,
+        angle_shift=0,
     ):
         self.forward_speed = forward_speed
         self.turn_speed = turn_speed
@@ -68,9 +92,10 @@ class RobotMove:
         self.ground_sensors_bool = ground_sensors_bool
         self.critical_level = critical_level
         self.trigger_level = trigger_level
+        self.angle_shift = angle_shift
 
         self.running = True
-        self.turning_angle = 1  # degrees
+        self.turning_angle = turn_angle  # degrees
         self.stop_bool = False
 
         print("Initializing Thymio Robot")
@@ -81,6 +106,7 @@ class RobotMove:
         )
         # Connect to Robot
         th.connect()
+        self.th = th
         self.robot = th[th.first_node()]
 
         # Print all variables
@@ -92,8 +118,8 @@ class RobotMove:
         if self.ground_sensors_bool:
             print("\nGround sensors values...\n")
             time.sleep(0.2)  # wait for sensors to initialize
-            # print("ground.delta  L R = ", self.robot["prox.ground.delta"])
-            print("ground.reflected  L R = ", self.robot["prox.ground.reflected"])
+            print("ground.delta  L R = ", self.robot["prox.ground.delta"])
+            # print("ground.reflected  L R = ", self.robot["prox.ground.reflected"])
             print("\n")
 
     def angle_to_time(self, angle, speed):
@@ -124,20 +150,6 @@ class RobotMove:
 
     def audio_move_360(self):
         """Execute attraction and repulsion-based movement behaviour for the robot.
-        Based on given angles over 360 degrees.
-
-        Attributes Used
-        ----------------
-        self.running : bool
-            Flag indicating if the robot's main loop is running.
-        critical_level : float
-            Critical sound pressure level (dB SPL) for avoiding collisions.
-        trigger_level : float
-            Sound pressure level (dB SPL) threshold to trigger detection.
-        angle_queue : queue.Queue
-            Inter-thread queue for sharing detected angles from AudioProcessor.
-        level_queue : queue.Queue
-            Inter-thread queue for sharing SPL levels from AudioProcessor.
         self.robot : object
             Thymio robot instance for motor and sensor control.
         self.turning_angle : int
@@ -152,30 +164,38 @@ class RobotMove:
         """
 
         # 2. Initialize the controller
-        led_controller = SoundLEDController(
-            angle_queue=angle_queue_led,
-            level_queue=level_queue_led,
-            trigger_threshold=self.trigger_level,
-            critical_threshold=self.critical_level,
-            high_intensity=0x1F,  # Max brightness
-            low_intensity=0x01,  # Min brightness
-        )
+        try:
+            led_controller = SoundLEDController(
+                angle_queue=angle_queue_led,
+                level_queue=level_queue_led,
+                trigger_threshold=self.trigger_level,
+                critical_threshold=self.critical_level,
+                high_intensity=0x1F,  # Max brightness
+                low_intensity=0x01,  # Min brightness
+                angle_shift=self.angle_shift,
+            )
+        except Exception as exc:
+            raise RuntimeError("Failed to initialize SoundLEDController") from exc
 
+        self.led_controller = led_controller
         led_controller.start()
+
+        angle = None
+        level = None
 
         while self.running:
             try:
                 # Check for a global stop signal (e.g., if the robot is lifted)
                 if self.check_stop_all_motion():
-                    self.stop_bool = True
-                    self.stop()
+                    self.stop_motion()
+                    time.sleep(0.1)
                     continue  # Go back to top of loop
-
-                self.avoid_white_line()
+                self.avoid_line()
 
                 # Flush the angle queue to obtain the latest angle value.
                 while not angle_queue.empty():
                     angle = angle_queue.get()
+                    # print(f"Angle: {angle} degrees")
                     if angle is not None:
                         if angle > 345 or angle < 22:
                             self.robot["leds.circle"] = [255, 0, 0, 0, 0, 0, 0, 0]
@@ -206,25 +226,28 @@ class RobotMove:
                             255,
                         ]
                         self.move_forward()  # Go straight if no angle is available.
+                    else:
+                        raise Warning(
+                            "Angle value is None, but LED handling not working."
+                        )
 
-                # Flush the level queue similarly to get the latest level value.
                 while not level_queue.empty():
                     level = level_queue.get()
 
                 # Make a decision based on the latest values.
                 if (
                     level is not None
+                    and angle is not None
                     and level < self.critical_level
                     and level > self.trigger_level
                 ):
                     self.robot["leds.top"] = [0, 0, 255]
                     self.robot["leds.bottom.right"] = [0, 0, 255]
-                    self.robot["leds.bottom.left"] = [0, 0, 255]
                     if angle > 180:
                         self.robot["leds.bottom.right"] = [0, 0, 255]
                         self.robot["leds.bottom.left"] = [0, 0, 255]
                         self.robot["leds.top"] = [0, 0, 255]
-                        if angle >= 240:
+                        if angle >= 330:
                             # self.rotate_right(360 - self.turning_angle)
                             self.smooth_rotate_left(self.turning_angle)
 
@@ -232,10 +255,14 @@ class RobotMove:
                         self.robot["leds.bottom.right"] = [0, 0, 255]
                         self.robot["leds.bottom.left"] = [0, 0, 255]
                         self.robot["leds.top"] = [0, 0, 255]
-                        if angle <= 120:
+                        if angle <= 30:
                             self.smooth_rotate_right(self.turning_angle)
 
-                elif level is not None and level > self.critical_level:
+                elif (
+                    level is not None
+                    and angle is not None
+                    and level > self.critical_level
+                ):
                     self.robot["leds.top"] = [255, 0, 0]
                     self.robot["leds.bottom.right"] = [255, 0, 0]
                     self.robot["leds.bottom.left"] = [255, 0, 0]
@@ -245,30 +272,32 @@ class RobotMove:
                         self.robot["leds.top"] = [255, 0, 0]
                         if angle >= 260:
                             # self.rotate_right(360 - self.turning_angle)
-                            self.smooth_rotate_right(self.turning_angle)
+                            self.smooth_rotate_right(10 * self.turning_angle)
 
                     else:
                         self.robot["leds.bottom.right"] = [255, 0, 0]
                         self.robot["leds.bottom.left"] = [255, 0, 0]
                         self.robot["leds.top"] = [255, 0, 0]
                         if angle <= 100:
-                            self.smooth_rotate_left(self.turning_angle)
+                            self.smooth_rotate_left(10 * self.turning_angle)
 
                 else:
                     pass
                 # After executing a turn, go back to moving straight.
                 self.move_forward()
                 level = None
+                angle = None
 
             except Exception as e:
-                self.stop_bool = True
-                self.stop()
+                import traceback
+
+                print(f"[ERROR in audio_move_360]: {e}")
+                traceback.print_exc()
+                time.sleep(0.1)
 
             except KeyboardInterrupt:
-                self.stop_bool = True
                 self.stop()
         else:
-            self.stop_bool = True
             self.stop()
             led_controller.stop()
 
@@ -287,22 +316,18 @@ class RobotMove:
         -Top and bottom LEDs illuminate green and the robot moves forward
 
         """
+        if not self.running or self.robot is None:
+            return
+
+        if self.check_stop_all_motion():
+            self.stop_motion()
+            return
 
         self.robot["leds.top"] = [0, 255, 0]
         self.robot["leds.bottom.right"] = [0, 255, 0]
         self.robot["leds.bottom.left"] = [0, 255, 0]
-        if self.robot is not None:
-            if self.check_stop_all_motion():
-                self.stop_bool = True
-                self.stop()
-                # interrupt the loop
-                return
-            self.robot["motor.left.target"] = self.forward_speed
-            self.robot["motor.right.target"] = self.forward_speed
-
-        else:
-            self.stop_bool = True
-            self.stop()
+        self.robot["motor.left.target"] = self.forward_speed
+        self.robot["motor.right.target"] = self.forward_speed
 
     def rotate_right(self, angle):
         """Rotate the robot to the right by a specified angle.
@@ -324,19 +349,22 @@ class RobotMove:
         - Gives priority to the line detection to avoid the robot exiting the arena
 
         """
-        if self.robot is not None:
+        if self.robot is not None and self.running:
             counter = self.angle_to_time(angle, self.turn_speed)
+            print("angle counter =", counter)
             start_time = time.time()
             while time.time() - start_time < counter:
-                if self.check_stop_all_motion():
-                    self.stop_bool = True
+                if not self.running or self.check_stop_all_motion():
+                    self.stop_motion()
                     break
                 self.robot["motor.left.target"] = self.turn_speed
                 self.robot["motor.right.target"] = -self.turn_speed
             # print(f"Rotating right with angle {angle}")
-            angle_queue.clear()  # Clear the angle queue to avoid processing old angles during rotation
+            clear_queue(
+                angle_queue
+            )  # Clear the angle queue to avoid processing old angles during rotation
         else:
-            self.stop()
+            self.stop_motion()
 
     def rotate_left(self, angle):
         """Rotate the robot to the left by a specified angle.
@@ -358,19 +386,21 @@ class RobotMove:
         - Gives priority to the line detection to avoid the robot exiting the arena
 
         """
-        if self.robot is not None:
+        if self.robot is not None and self.running:
             counter = self.angle_to_time(angle, self.turn_speed)
             start_time = time.time()
             while time.time() - start_time < counter:
-                if self.check_stop_all_motion():
-                    self.stop_bool = True
+                if not self.running or self.check_stop_all_motion():
+                    self.stop_motion()
                     break
                 self.robot["motor.left.target"] = -self.turn_speed
                 self.robot["motor.right.target"] = self.turn_speed
             # print(f"Rotating left with angle {angle}")
-            angle_queue.clear()  # Clear the angle queue to avoid processing old angles during rotation
+            clear_queue(
+                angle_queue
+            )  # Clear the angle queue to avoid processing old angles during rotation
         else:
-            self.stop()
+            self.stop_motion()
 
     def smooth_rotate_right(self, angle):
         """Rotate the robot to the right by a specified angle but keeps some forward speed while turning.
@@ -392,20 +422,22 @@ class RobotMove:
         - Gives priority to the line detection to avoid the robot exiting the arena
 
         """
-        if self.robot is not None:
+        if self.robot is not None and self.running:
             counter = self.angle_to_time(angle, self.turn_speed)
             start_time = time.time()
             while time.time() - start_time < counter:
-                if self.check_stop_all_motion():
-                    self.stop_bool = True
+                if not self.running or self.check_stop_all_motion():
+                    self.stop_motion()
                     break
                 self.robot["motor.left.target"] = self.turn_speed + self.forward_speed
-                self.robot["motor.right.target"] = -self.turn_speed + self.forward_speed
+                self.robot["motor.right.target"] = self.forward_speed
             # print(f"Smooth rotating right with angle {angle}")
-            angle_queue.clear()  # Clear the angle queue to avoid processing old angles during rotation
+            clear_queue(
+                angle_queue
+            )  # Clear the angle queue to avoid processing old angles during rotation
 
         else:
-            self.stop()
+            self.stop_motion()
 
     def smooth_rotate_left(self, angle):
         """Rotate the robot to the left by a specified angle but keeps some forward speed while turning.
@@ -427,19 +459,21 @@ class RobotMove:
         - Gives priority to the line detection to avoid the robot exiting the arena
 
         """
-        if self.robot is not None:
+        if self.robot is not None and self.running:
             counter = self.angle_to_time(angle, self.turn_speed)
             start_time = time.time()
             while time.time() - start_time < counter:
-                if self.check_stop_all_motion():
-                    self.stop_bool = True
+                if not self.running or self.check_stop_all_motion():
+                    self.stop_motion()
                     break
-                self.robot["motor.left.target"] = -self.turn_speed + self.forward_speed
+                self.robot["motor.left.target"] = self.forward_speed
                 self.robot["motor.right.target"] = self.turn_speed + self.forward_speed
             # print(f"smooth Rotating left with angle {angle}")
-            angle_queue.clear()  # Clear the angle queue to avoid processing old angles during rotation
+            clear_queue(
+                angle_queue
+            )  # Clear the angle queue to avoid processing old angles during rotation
         else:
-            self.stop()
+            self.stop_motion()
 
     def move_back(self):
         """Move the robot backward when an obstacle is detected in front.
@@ -487,85 +521,106 @@ class RobotMove:
             self.stop()
             return False
 
-    def avoid_white_line(self):
-        """Avoid white line detection and response.
+    def avoid_line(self):
+        """Avoid  line detection and response.
 
-        If both ground sensors detect a white line, the robot performs a random turn.
-        If only the left sensor detects a white line, the robot turns right.
-        If only the right sensor detects a white line, the robot turns left.
+        If both ground sensors detect a  line, the robot performs a random turn.
+        If only the left sensor detects a  line, the robot turns right.
+        If only the right sensor detects a  line, the robot turns left.
 
         Attributes Used
         ---------------
         self.left_sensor_threshold : int
-            Threshold value for left ground sensor to detect white lines.
+            Threshold value for left ground sensor to detect  lines.
         self.right_sensor_threshold : int
-            Threshold value for right ground sensor to detect white lines.
+            Threshold value for right ground sensor to detect  lines.
         self.robot : object
             Thymio robot instance for motor and sensor control.
         self.stop_bool : bool
             Set to True when stop condition is met
 
         """
+        if not self.running or self.robot is None:
+            return
         try:
-            if self.robot is not None:
-                # check if the white line is detected
+            if self.robot is not None and self.running:
+                # check if the  line is detected
+                # print("ground.reflected  L R = ", self.robot["prox.ground.reflected"])
                 if (
-                    self.robot["prox.ground.reflected"][0] > self.left_sensor_threshold
+                    self.robot["prox.ground.reflected"][0] < self.left_sensor_threshold
                     and self.robot["prox.ground.reflected"][1]
-                    > self.right_sensor_threshold
+                    < self.right_sensor_threshold
                 ):
                     # Both sensors detect the line
                     if self.check_stop_all_motion():
-                        self.stop_bool = True
-                        self.stop()
+                        self.stop_motion()
                         return
                     self.random_turn(30)
 
                 elif (
-                    self.robot["prox.ground.reflected"][0] > self.left_sensor_threshold
+                    self.robot["prox.ground.reflected"][0] < self.left_sensor_threshold
                 ):
                     # Left sensor detects the line
                     counter = self.angle_to_time(20, self.turn_speed)
                     start_time = time.time()
                     while time.time() - start_time < counter:
-                        if self.check_stop_all_motion():
-                            self.stop_bool = True
+                        if not self.running or self.check_stop_all_motion():
+                            self.stop_motion()
                             break
                         self.robot["motor.left.target"] = self.turn_speed
                         self.robot["motor.right.target"] = -self.turn_speed
 
                 elif (
-                    self.robot["prox.ground.reflected"][1] > self.right_sensor_threshold
+                    self.robot["prox.ground.reflected"][1] < self.right_sensor_threshold
                 ):
                     # Right sensor detects the line
                     counter = self.angle_to_time(20, self.turn_speed)
                     start_time = time.time()
                     while time.time() - start_time < counter:
-                        if self.check_stop_all_motion():
-                            self.stop_bool = True
+                        if not self.running or self.check_stop_all_motion():
+                            self.stop_motion()
                             break
                         self.robot["motor.left.target"] = -self.turn_speed
                         self.robot["motor.right.target"] = self.turn_speed
 
             else:
-                self.stop()
+                self.stop_motion()
         except KeyboardInterrupt:
-            self.stop_bool = True
             self.stop()
 
+    def stop_motion(self):
+        """Stop robot motors without terminating the main loop."""
+        try:
+            if self.robot is not None:
+                self.robot["motor.left.target"] = 0
+                self.robot["motor.right.target"] = 0
+        except Exception:
+            pass
+
     def stop(self):
-        """Stop all robot movement and turn off all LEDs.
+        """Stop all robot movement, turn off Thymio LEDs, and turn ReSpeaker array red at low brightness."""
+        self.running = False
+        self.stop_bool = True
+        try:
+            if self.robot is not None:
+                self.robot["motor.left.target"] = 0
+                self.robot["motor.right.target"] = 0
+                self.robot["leds.top"] = [0, 0, 0]
+                self.robot["leds.bottom.right"] = [0, 0, 0]
+                self.robot["leds.bottom.left"] = [0, 0, 0]
+                self.robot["leds.circle"] = [0, 0, 0, 0, 0, 0, 0, 0]
+        except Exception as e:
+            print(f"Error setting Thymio stop state: {e}")
 
-        This method stops the robot by setting both motor targets to zero and
-        disables all LED indicators by setting them to off (black color).
+        if hasattr(self, "led_controller") and self.led_controller is not None:
+            try:
+                self.led_controller.set_all_red_min_brightness()
+            except Exception as e:
+                print(f"Error turning ReSpeaker red: {e}")
 
-        """
-        self.robot["motor.left.target"] = 0
-        self.robot["motor.right.target"] = 0
-        self.robot["leds.top"] = [0, 0, 0]
-        self.robot["leds.bottom.right"] = [0, 0, 0]
-        self.robot["leds.bottom.left"] = [0, 0, 0]
-        self.robot["leds.circle"] = [0, 0, 0, 0, 0, 0, 0, 0]
+        import time
+
+        time.sleep(0.3)  # Give thymiodirect time to send the commands over serial
 
     def random_turn(self, angle):
         """Perform a random movement of the robot in a random direction.
@@ -583,14 +638,12 @@ class RobotMove:
             Set to True when stop condition is met
 
         """
-        if self.robot is not None:
-            if self.check_stop_all_motion():
-                self.stop_bool = True
-                self.stop()
-                return
-            if bool(random.getrandbits(1)):
-                self.rotate_right(angle)
-                return
-            else:
-                self.rotate_left(angle)
-                return
+        if not self.running or self.robot is None:
+            return
+        if self.check_stop_all_motion():
+            self.stop_motion()
+            return
+        if bool(random.getrandbits(1)):
+            self.rotate_right(angle)
+        else:
+            self.rotate_left(angle)

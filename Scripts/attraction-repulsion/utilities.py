@@ -16,6 +16,7 @@ import scipy.signal as signal
 from scipy.interpolate import interp1d
 from scipy.signal import stft, hilbert
 import time
+import os
 import matplotlib.pyplot as plt
 
 # Audio processing functions
@@ -249,6 +250,33 @@ def detect_peaks(filtered_output, sample_rate, prominence, distance):
         filtered_output, prominence=prominence, distance=distance * sample_rate
     )
     return peaks
+
+
+def find_peaks_circular(mag_p, wrap=3):
+    """
+    Circular-aware peak detection: wraps `wrap` samples from each end
+    around the array so peaks at the 0/360 boundary are correctly
+    detected by scipy's find_peaks (which cannot flag edge elements).
+    """
+    n = len(mag_p)
+    # Extend array: [last `wrap` samples] + [full array] + [first `wrap` samples]
+    extended = np.concatenate([mag_p[-wrap:], mag_p, mag_p[:wrap]])
+
+    peaks_ext, _ = signal.find_peaks(extended)
+
+    # Map back to original indices, keeping only peaks in the "real" middle region,
+    # but converting wrapped detections back to their true original index
+    peaks = []
+    for p in peaks_ext:
+        real_idx = p - wrap
+        if 0 <= real_idx < n:
+            peaks.append(real_idx)
+        elif real_idx < 0:  # wrapped from the end
+            peaks.append(real_idx + n)
+        elif real_idx >= n:  # wrapped from the start
+            peaks.append(real_idx - n)
+
+    return np.unique(peaks)
 
 
 def pow_two_pad_and_window(vec, fs, show=True):
@@ -1078,3 +1106,371 @@ def perc_to_speed(value):
         v = 0.0
     v = max(0.0, min(100.0, v))
     return int(round((v / 100.0) * 500.0))
+
+
+class WhitenedUCABeamformer:
+    """
+    Precomputes noise whitening + steering vectors ONCE at startup,
+    using a long calibration recording. Per-chirp processing is then
+    fast (only new FFT + whitening + beamform + CFAR).
+    """
+
+    def __init__(self, fs, nch, r, shift, bw, theta, wlen=16, nfft=128, c=343):
+        self.fs = fs
+        self.nch = nch
+        self.r = r
+        self.shift = shift
+        self.bw = bw
+        self.theta = theta
+        self.theta_rad = np.deg2rad(theta)
+        self.wlen = wlen
+        self.nfft = nfft
+        self.c = c
+
+        # Placeholders filled in by calibrate()
+        self.R_n = None
+        self.W = None
+        self.band_idxs = None
+        self.bands = None
+        self.a_mat_white = None
+        self.a_H_mat = None
+        self.norm_theta = None
+        self.is_calibrated = False
+
+    def calibrate(self, y_noise_long, eps=0.02):
+        """
+        Run ONCE at startup with a long (10-15s) noise-only recording.
+        Precomputes R_n, W, and whitened steering vectors for all
+        subsequent chirp processing.
+
+        Parameters
+        ----------
+        y_noise_long : ndarray, shape (n_samples, nch)
+            Long calibration recording (gear noise only, no chirp).
+            Recommend sweeping wheel speed during this recording.
+        """
+        wlen = self.wlen
+        nfft = self.nfft
+        fs = self.fs
+        nch = self.nch
+
+        # --- Estimate R_n(f) from long recording ---
+        f_spec_axis, _, spectrum = stft(
+            y_noise_long,
+            fs=fs,
+            window=np.ones((wlen,)),
+            nperseg=wlen,
+            noverlap=wlen - 1,
+            nfft=nfft,
+            axis=0,
+        )
+        # spectrum shape: (n_bins, nch, n_frames)  -- n_frames will be
+        # large (~ n_samples) since noverlap = wlen-1, giving a very
+        # stable covariance estimate -- this is fine, it's a one-time cost
+
+        n_bins = spectrum.shape[0]
+        R_n_full = np.zeros((n_bins, nch, nch), dtype=complex)
+
+        for f_idx in range(n_bins):
+            seg = spectrum[f_idx, :, :]  # (nch, n_frames)
+            R_n_full[f_idx] = np.cov(seg, bias=True)
+            trace_val = np.trace(R_n_full[f_idx]).real
+            R_n_full[f_idx] += (eps * trace_val / nch) * np.eye(nch)
+
+        self.R_n = R_n_full
+
+        # --- Restrict to usable band ---
+        self.band_idxs = np.where(
+            (f_spec_axis >= self.bw[0]) & (f_spec_axis <= self.bw[1])
+        )[0]
+        self.bands = f_spec_axis[self.band_idxs]
+
+        # --- Compute whitening matrices W(f) for used bands only ---
+        W_full = np.zeros((len(self.band_idxs), nch, nch), dtype=complex)
+        for i, f_idx in enumerate(self.band_idxs):
+            L = np.linalg.cholesky(self.R_n[f_idx])
+            W_full[i] = np.linalg.inv(L)
+        self.W = W_full  # shape (n_bands_used, nch, nch)
+
+        # --- UCA geometry ---
+        shift_rad = np.deg2rad(self.shift)
+        phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
+        mic_x = self.r * np.cos(phi_n)
+        mic_y = self.r * np.sin(phi_n)
+
+        # --- Build + whiten steering vectors ONCE ---
+        n_bands = len(self.bands)
+        n_theta = len(self.theta)
+        a_mat = np.zeros((nch, n_bands, n_theta), dtype=complex)
+
+        for b_idx, f in enumerate(self.bands):
+            k = 2 * np.pi * f / self.c
+            for t_idx, t_start in enumerate(self.theta_rad):
+                phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
+                a_mat[:, b_idx, t_idx] = np.exp(1j * phase)
+
+        a_mat_white = np.zeros_like(a_mat)
+        for b_idx in range(n_bands):
+            a_mat_white[:, b_idx, :] = self.W[b_idx] @ a_mat[:, b_idx, :]
+
+        self.a_mat_white = a_mat_white
+        self.a_H_mat = np.conj(
+            a_mat_white.transpose(1, 2, 0)
+        )  # (n_bands, n_theta, nch)
+
+        # --- Precompute per-angle normalization (fixed, since calibration is fixed) ---
+        norm_theta = np.zeros((n_bands, n_theta))
+        for b_idx in range(n_bands):
+            a = a_mat_white[:, b_idx, :]
+            norm_theta[b_idx] = np.maximum(
+                np.real(np.sum(np.conj(a) * a, axis=0)), 1e-12
+            )
+        self.norm_theta = norm_theta
+
+        self.is_calibrated = True
+        print(f"Calibration complete: {n_bands} bands, {n_theta} angles.")
+
+    def das_filter_UCA_motor_whitened(self, y, show=False):
+        """
+        Multiband whitened DAS for a UCA, using precomputed calibration
+        data (self.W, self.a_mat_white, self.a_H_mat, self.norm_theta,
+        self.band_idxs, self.bands, self.theta). Only new work per call
+        is the STFT + whitening + beamform of the incoming buffer `y`.
+        """
+        if not self.is_calibrated:
+            raise RuntimeError("Call calibrate() once before process().")
+
+        # 1. Spectral Decomposition (uses calibration-time fs/wlen for consistency)
+        f_spec_axis, _, spectrum = stft(
+            y,
+            fs=self.fs,
+            window=np.ones((self.wlen,)),
+            nperseg=self.wlen,
+            noverlap=self.wlen - 1,
+            nfft=self.nfft,
+            axis=0,
+        )
+
+        theta_rad = self.theta_rad  # use calibration-time angle grid, always
+
+        # 4. Spatial Filtering (reuses precomputed geometry/whitening — no recompute)
+        p = np.zeros(len(self.theta), dtype=complex)
+
+        if show:
+            fig, ax = plt.subplots()
+            linestyles = ["-", "--", "-.", ":"]
+
+        for b_idx, f_idx in enumerate(self.band_idxs):
+            spec = spectrum[f_idx, :, :]  # (nch, n_frames)
+
+            spec_white = self.W[b_idx] @ spec  # whiten with calibration W
+
+            cov_est = np.cov(spec_white, bias=True)
+
+            a = self.a_mat_white[:, b_idx, :]
+            a_H = self.a_H_mat[b_idx, :, :]
+            norm = self.norm_theta[b_idx]
+
+            p_i = np.einsum("ij,jk,ki->i", a_H, cov_est, a) / norm
+            p += p_i
+
+            if show:
+                ax.plot(
+                    np.rad2deg(theta_rad),
+                    np.abs(p_i) + 1e-12,
+                    label=f"{self.bands[b_idx]:.1f} Hz",
+                    linestyle=linestyles[b_idx % len(linestyles)],
+                )
+
+        mag_p = np.abs(p) / len(self.bands)
+
+        if show:
+            ax.set_title("Whitened UCA DAS Pseudospectra")
+            ax.plot(
+                np.rad2deg(theta_rad),
+                mag_p + 1e-12,
+                label="full spectrum",
+                linewidth=4,
+                color="black",
+            )
+            ax.grid()
+            ax.set_xlabel("Angle (Degrees)")
+            ax.set_ylabel("Magnitude (linear)")
+            ax.legend()
+            plt.show()
+
+            plt.figure()
+            debug_bin = self.band_idxs[8]
+            plt.title(f"Spectrum at f={self.bands[8]:.1f} Hz")
+            plt.imshow(np.abs(spectrum[debug_bin, :, :]), aspect="auto", origin="lower")
+            plt.colorbar(label="Magnitude")
+            plt.xlabel("Frames")
+            plt.ylabel("Channels")
+            plt.show()
+
+        return self.theta, mag_p, f_spec_axis, spectrum, self.bands
+
+    def plot_calibration_diagnostics(self, save_dir=".", prefix="calib"):
+        """
+        Generates diagnostic plots after calibrate() has been run:
+        1. Noise power per mic vs frequency (R_n diagonal)
+        2. Inter-mic coherence vs frequency (R_n off-diagonal, normalized)
+        3. Eigenvalues / condition number of R_n(f) vs frequency
+        4. Whitening matrix W(f) magnitude (heatmap)
+        5. Steering vector norm vs angle, before vs after whitening
+            (shows directional bias introduced/corrected by whitening)
+        """
+        if not self.is_calibrated:
+            raise RuntimeError("Run calibrate() before plotting diagnostics.")
+
+        os.makedirs(save_dir, exist_ok=True)
+        nch = self.nch
+        bands = self.bands
+        n_bands = len(bands)
+
+        # ---------------------------------------------------------------
+        # 1. Noise power per mic vs frequency (diagonal of R_n)
+        # ---------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for ch in range(nch):
+            power_db = 10 * np.log10(np.abs(self.R_n[self.band_idxs, ch, ch]) + 1e-12)
+            ax.plot(bands, power_db, label=f"Mic {ch}")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Noise power (dB)")
+        ax.set_title("Per-mic gear noise power spectrum")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(save_dir, f"{prefix}_noise_power_per_mic.png"), dpi=150
+        )
+        plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # 2. Inter-mic coherence vs frequency (normalized off-diagonal)
+        #    coherence_ij(f) = |R_n[i,j]| / sqrt(R_n[i,i] * R_n[j,j])
+        #    Value near 1 => highly correlated noise between that pair
+        #    Value near 0 => spatially uncorrelated at that frequency
+        # ---------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(8, 4))
+        pair_list = [(i, j) for i in range(nch) for j in range(i + 1, nch)]
+        for i, j in pair_list:
+            Rii = np.abs(self.R_n[self.band_idxs, i, i])
+            Rjj = np.abs(self.R_n[self.band_idxs, j, j])
+            Rij = np.abs(self.R_n[self.band_idxs, i, j])
+            coherence = Rij / (np.sqrt(Rii * Rjj) + 1e-12)
+            ax.plot(bands, coherence, label=f"Mic {i}-{j}")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Coherence (0-1)")
+        ax.set_title("Inter-mic noise coherence (spatial correlation of gear noise)")
+        ax.set_ylim(0, 1.05)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(save_dir, f"{prefix}_coherence.png"), dpi=150)
+        plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # 3. Eigenvalues / condition number vs frequency
+        #    High condition number => near-singular R_n => whitening will
+        #    aggressively boost that direction (check for instability)
+        # ---------------------------------------------------------------
+        eigvals_all = np.zeros((n_bands, nch))
+        cond_numbers = np.zeros(n_bands)
+        for b_idx, f_idx in enumerate(self.band_idxs):
+            ev = np.linalg.eigvalsh(self.R_n[f_idx])
+            ev = np.sort(np.abs(ev))[::-1]
+            eigvals_all[b_idx] = ev
+            cond_numbers[b_idx] = ev[0] / (ev[-1] + 1e-12)
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+        for k in range(nch):
+            ax1.plot(bands, 10 * np.log10(eigvals_all[:, k] + 1e-12), label=f"λ{k+1}")
+        ax1.set_ylabel("Eigenvalue (dB)")
+        ax1.set_title("R_n(f) eigenvalue spread")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        ax2.plot(bands, cond_numbers)
+        ax2.set_xlabel("Frequency (Hz)")
+        ax2.set_ylabel("Condition number")
+        ax2.set_title(
+            "R_n(f) condition number (high = near-singular, watch for instability)"
+        )
+        ax2.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(save_dir, f"{prefix}_eigenvalues_condition.png"), dpi=150
+        )
+        plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # 4. Whitening matrix W(f) magnitude, shown as heatmap
+        #    (frequency on y-axis, flattened 4x4 matrix entries on x-axis)
+        # ---------------------------------------------------------------
+        W_mag = np.abs(self.W).reshape(n_bands, nch * nch)  # (n_bands, 16)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        im = ax.imshow(
+            W_mag,
+            aspect="auto",
+            origin="lower",
+            extent=[0, nch * nch, bands[0], bands[-1]],
+            cmap="viridis",
+        )
+        ax.set_xlabel("W matrix entry (flattened row-major: [0,0],[0,1],...,[3,3])")
+        ax.set_ylabel("Frequency (Hz)")
+        ax.set_title("Whitening matrix |W(f)| magnitude")
+        fig.colorbar(im, ax=ax, label="|W| magnitude")
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(save_dir, f"{prefix}_whitening_matrix_heatmap.png"), dpi=150
+        )
+        plt.close(fig)
+
+        # ---------------------------------------------------------------
+        # 5. Steering vector norm vs angle, before vs after whitening
+        #    Shows if whitening introduces angle-dependent bias, and
+        #    confirms the norm_theta correction is doing its job
+        # ---------------------------------------------------------------
+        # Recompute unwhitened steering vectors for comparison
+        shift_rad = np.deg2rad(self.shift)
+        phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
+        mic_x = self.r * np.cos(phi_n)
+        mic_y = self.r * np.sin(phi_n)
+
+        norm_unwhitened = np.zeros(len(self.theta))
+        for t_idx, t_start in enumerate(self.theta_rad):
+            total = 0
+            for b_idx, f in enumerate(bands):
+                k = 2 * np.pi * f / self.c
+                phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
+                a = np.exp(1j * phase)
+                total += np.real(np.sum(np.conj(a) * a))
+            norm_unwhitened[t_idx] = total
+        norm_unwhitened /= len(bands)
+
+        norm_whitened_avg = np.mean(self.norm_theta, axis=0)  # avg over bands
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(
+            self.theta,
+            norm_unwhitened / norm_unwhitened.max(),
+            label="Unwhitened (should be flat/uniform)",
+        )
+        ax.plot(
+            self.theta,
+            norm_whitened_avg / norm_whitened_avg.max(),
+            label="Whitened (shows directional bias from noise)",
+        )
+        ax.set_xlabel("Angle (deg)")
+        ax.set_ylabel("Normalized steering vector norm")
+        ax.set_title("Whitening-induced directional sensitivity change")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(save_dir, f"{prefix}_steering_norm_comparison.png"), dpi=150
+        )
+        plt.close(fig)
+
+        print(f"Calibration diagnostic plots saved to: {save_dir}")

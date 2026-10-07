@@ -106,6 +106,8 @@ RobotMove : Controls robot movement behaviours
 
 print("import libraries...")
 
+from tracemalloc import start
+
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as signal
@@ -120,11 +122,16 @@ import threading
 import pandas as pd
 import netifaces as ni
 
-from utilities import *
+from Scripts.linear_sonoro.utilities import *
 
-from AudioProcessor import AudioProcessor
-from RobotMove import RobotMove
-from shared_queues import angle_queue, level_queue
+from Scripts.linear_sonoro.AudioProcessor1 import AudioProcessor
+from Scripts.linear_sonoro.RobotMove import RobotMove
+from Scripts.linear_sonoro.shared_queues import (
+    angle_queue,
+    level_queue,
+    angle_queue_led,
+    level_queue_led,
+)
 
 print("imports done")
 
@@ -150,7 +157,7 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices(), "MCHStreamer")  # MCHStreamer, ReSpeaker
+soundcard_index = get_card(sd.query_devices(), "ReSpeaker")  # MCHStreamer, ReSpeaker
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
@@ -165,23 +172,28 @@ print("raspi_local_ip =", raspi_local_ip)
 behaviour = "dynamic_movement"  # Options: 'attraction', 'repulsion', 'dynamic_movement'
 
 # Parameters for the DOA algorithm
-trigger_level = 70  # dB SPL
-critical_level = 80  # dB SPL
+trigger_level = 87  # dB SPL
+critical_level = 95  # dB SPL
 c = 343  # speed of sound
-fs = 48000
-radius = 0.0323  # radius of the UCA in meters
+fs = 16000
+radius = 0.0323  # radius of the UCA in metersS
 shift = 45  # degrees of shift of mics wrt 0 angle
-call_rate = 4  # calls per second, used to calculate the inter-call interval (IPI)
-IPI = 1 / call_rate  # inter-call interval in seconds
+call_rate = 3  # calls per second, used to calculate the inter-call interval (ICI). 6 is the limit
+ICI = 1 / call_rate  # inter-call interval in seconds
+
+# Parameters for the chirp signal
+duration_out = 10e-3  # Duration in seconds
 
 rec_samplerate = fs
-input_buffer_time = IPI * 0.1  # seconds
+input_buffer_time = ICI - duration_out - 50e-3 - 50e-3 - 40e-3  # seconds
+print("input_buffer_time =", input_buffer_time)
 block_size = int(
     input_buffer_time * fs
 )  # used for the shared queue from which the doa is computed, not anymore for the output stream
 channels = 5
 mic_spacing = 0.018  # m
 ref = channels // 2  # central mic in odd array as ref
+print("ref mic index =", ref)
 # ref= 0 #left most mic as reference
 critical = []
 
@@ -193,11 +205,8 @@ avar_theta = None
 theta_values = []
 
 # Parameters for the DAS algorithm
-theta_das = np.linspace(-90, 90, 61)  # angles resolution for DAS spectrum
+theta_das = np.arange(0, 360, 10)  # (start, end, step)
 N_peaks = 1  # Number of peaks to detect in DAS spectrum
-
-# Parameters for the chirp signal
-duration_out = 10e-3  # Duration in seconds
 
 if behaviour == "attraction":
     silence_post = 10  # [ms] can probably pushed to 20
@@ -205,7 +214,7 @@ elif behaviour == "repulsion":
     silence_post = 10  # [ms] can probably pushed to 20
 elif behaviour == "dynamic_movement":
     silence_post = (
-        duration_out * 1000 + 20
+        duration_out * 1000 + 40
     )  # [ms](duration of the chirp + 30ms of estimated time for the DAC to output the signal)
 
 if behaviour == "attraction":
@@ -213,13 +222,13 @@ if behaviour == "attraction":
 elif behaviour == "repulsion":
     amplitude = 0  # Amplitude of the chirp
 elif behaviour == "dynamic_movement":
-    amplitude = 0.5  # Amplitude of the chirp
+    amplitude = 1  # Amplitude of the chirp
 
 t = np.linspace(0, duration_out, int(fs * duration_out))
-start_f, end_f = 20e3, 2e3
+start_f, end_f = 4e3, 2e2
 sweep = signal.chirp(t, start_f, t[-1], end_f)
 sweep *= signal.windows.tukey(sweep.size, 0.2)
-sweep *= 0.8
+sweep *= 0.9
 
 silence_samples_post = int(silence_post * fs / 1000)
 silence_vec_post = np.zeros((silence_samples_post,))
@@ -240,7 +249,7 @@ print("LP frequency:", auto_lowpas_freq)
 highpass_freq, lowpass_freq = [auto_hipas_freq, auto_lowpas_freq]
 
 cutoff = auto_hipas_freq  # [Hz] highpass filter cutoff frequency
-sos = signal.butter(1, cutoff, "hp", fs=fs, output="sos")
+sos = signal.butter(1, 200, "hp", fs=fs, output="sos")
 
 # Set the path for the sensitivity CSV file relative to the current script location
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -253,7 +262,7 @@ block_size_analyzed_buffer = int(analyzed_buffer_time * fs)
 in_sig = np.zeros(
     block_size_analyzed_buffer, dtype=np.float32
 )  # Initialize the buffer for the audio input stream
-# print("in_sig shape:", np.shape(in_sig))
+print("in_sig shape:", np.shape(in_sig))
 centrefreqs, freqrms = calc_native_freqwise_rms(in_sig, fs)
 
 freqs = np.array(sensitivity.iloc[:, 0])  # first column contains frequencies
@@ -268,10 +277,8 @@ tgtmic_relevant_freqs = np.logical_and(
     centrefreqs >= frequency_band[0], centrefreqs <= frequency_band[1]
 )
 # Thymio movement parameters
-
-# Straight speed
-speed = 150
-turn_speed = 150
+speed = perc_to_speed(40)  # Map 0-100 perc speed to thymio range (0-500)
+turn_speed = perc_to_speed(40)
 
 left_sensor_threshold = 400
 right_sensor_threshold = 400
@@ -296,8 +303,6 @@ if __name__ == "__main__":
     args.rec_samplerate = rec_samplerate
     args.angle = 0
     args.subtype = None
-    args.filename = None
-    args.timestamp_filename = None
 
     # Set general save path
     time1 = startime.strftime("%Y-%m-%d")
@@ -366,7 +371,7 @@ if __name__ == "__main__":
         right_sensor_threshold,
         critical_level,
         trigger_level,
-        ground_sensors_bool=False,
+        ground_sensors_bool=True,
     )
 
     # Create threads for the audio input and recording
@@ -397,6 +402,9 @@ if __name__ == "__main__":
     else:
         print("No valid behaviour provided")
 
+    print("Waiting for the first input buffer to fill...")
+    time.sleep(1)  # Wait a moment to ensure threads are properly started
+
     event = threading.Event()
 
     time2 = startime.strftime("_%Y-%m-%d__%H-%M-%S")
@@ -407,17 +415,17 @@ if __name__ == "__main__":
     # timestamp_queue.put([audio_processor.ts_queue.get(), 0, 'recording_start'])
     timestamp_queue.put([audio_processor.ts_queue.get(), 0, 0, "recording_start"])
     end_time = time.time()
+    time40 = time.time()
     try:
         while True:
             start_time = time.time()
             event.clear()
-            if timestamp_bool == True:
-                timestamp = datetime.datetime.timestamp(
-                    datetime.datetime.now(datetime.timezone.utc)
-                )  # POSIX timestamp
-                timestamp_queue.put(
-                    [timestamp, 0, 0, "output_start"]
-                )  # Put the timestamp in the queue (no block=False, keeps all values)
+            timestamp = datetime.datetime.timestamp(
+                datetime.datetime.now(datetime.timezone.utc)
+            )  # POSIX timestamp
+            timestamp_queue.put(
+                [timestamp, 0, 0, "output_start"]
+            )  # Put the timestamp in the queue (no block=False, keeps all values)
             with sd.OutputStream(
                 samplerate=fs,
                 blocksize=0,
@@ -431,24 +439,46 @@ if __name__ == "__main__":
                     event.wait()
 
             if method == "DAS":
-                time.sleep((IPI - (time.time() - end_time)))
+                # print(" step 5", time.time() - time40)
+                print("Total loop time: ", time.time() - end_time)
 
-                print(time.time() - end_time)
+                wait_time = ICI - (time.time() - end_time)
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                else:
+                    print(
+                        f"Warning: computation took more than ICI = {ICI}! Approx: {(time.time() - end_time)} sec"
+                    )
+
                 end_time = time.time()
+
                 # timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S:%f')[:-3]  # Format timestamp to milliseconds
                 timestamp = datetime.datetime.timestamp(
                     datetime.datetime.now(datetime.timezone.utc)
                 )  # POSIX timestamp
-                # args.angle, dB_SPL_level = audio_processor.update_das()
-                # timestamp_queue.put(
-                #     [timestamp, dB_SPL_level[0], args.angle]
-                # )  # Put the timestamp in the queue (no block=False, keeps all values)
+                # print("step 1", time.time() - end_time)
+                time10 = time.time()
                 args.angle, dB_SPL_level = audio_processor.update_das_UCA()
-                # #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
+                # print("step 2 = update das", time.time() - time10)
+                time20 = time.time()
+                # print("step 3", time.time() - time20)
+                timestamp_queue.put([timestamp, dB_SPL_level[0], args.angle])
+                #!!!! USING NOT PARAMETRIC VALUES INSIDE update_das_UCA() !!!!!
+                time30 = time.time()
+                # print("step 4", time.time() - time30)
+                time40 = time.time()
+                angle_temp = args.angle
+                level_temp = dB_SPL_level[0]
+                angle_queue.put(angle_temp)
+                level_queue.put(level_temp)
+                angle_queue_led.put(angle_temp)
+                level_queue_led.put(level_temp)
+                print("\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
 
-                angle_queue.put(args.angle)
-                level_queue.put(dB_SPL_level)
-                print("Angle:", args.angle, "dB SPL:", dB_SPL_level[0])
+                # # print("step queue", time.time() - time40)
+                # if dB_SPL_level[0] >= trigger_level:
+
+                #     print("\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
 
             else:
                 print("No valid method provided")
@@ -456,34 +486,34 @@ if __name__ == "__main__":
 
     except Exception as e:
         robot_move.stop()
-        if timestamp_bool == True:
-            # Collect all remaining items from the queue and append to existing npy data
-            remaining_data = []
-            while not timestamp_queue.empty():
-                remaining_data.append(timestamp_queue.get())
-            if remaining_data:
-                # Load existing data if file exists
-                if os.path.exists(npy_data + ".npy"):
-                    existing_data = np.load(npy_data + ".npy", allow_pickle=True)
-                    # Ensure existing_data is always a list of records
-                    if existing_data.ndim == 1 and isinstance(
-                        existing_data[0], (list, np.ndarray)
-                    ):
-                        combined_data = np.concatenate(
-                            [existing_data, remaining_data], axis=0
-                        )
-                    else:
-                        combined_data = np.array(
-                            [existing_data] + remaining_data, dtype=object
-                        )
+
+        # Collect all remaining items from the queue and append to existing npy data
+        remaining_data = []
+        while not timestamp_queue.empty():
+            remaining_data.append(timestamp_queue.get())
+        if remaining_data:
+            # Load existing data if file exists
+            if os.path.exists(npy_data + ".npy"):
+                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                # Ensure existing_data is always a list of records
+                if existing_data.ndim == 1 and isinstance(
+                    existing_data[0], (list, np.ndarray)
+                ):
+                    combined_data = np.concatenate(
+                        [existing_data, remaining_data], axis=0
+                    )
                 else:
-                    combined_data = np.array(remaining_data, dtype=object)
-                np.save(npy_data, combined_data)
-            print(f"\nMatrix has been saved to npy at {npy_data}\n")
+                    combined_data = np.array(
+                        [existing_data] + remaining_data, dtype=object
+                    )
+            else:
+                combined_data = np.array(remaining_data, dtype=object)
+            np.save(npy_data, combined_data)
+        print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
         inputstream_thread.join()
-        if recording_bool == True:
-            print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
+
+        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
@@ -491,35 +521,37 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         robot_move.stop()
-        if timestamp_bool == True:
-            # Collect all remaining items from the queue and append to existing npy data
-            remaining_data = []
-            while not timestamp_queue.empty():
-                remaining_data.append(timestamp_queue.get())
-            if remaining_data:
-                # Load existing data if file exists
-                if os.path.exists(npy_data + ".npy"):
-                    existing_data = np.load(npy_data + ".npy", allow_pickle=True)
-                    # Ensure existing_data is always a list of records
-                    if existing_data.ndim == 1 and isinstance(
-                        existing_data[0], (list, np.ndarray)
-                    ):
-                        combined_data = np.concatenate(
-                            [existing_data, remaining_data], axis=0
-                        )
-                    else:
-                        combined_data = np.array(
-                            [existing_data] + remaining_data, dtype=object
-                        )
-                else:
-                    combined_data = np.array(remaining_data, dtype=object)
-                np.save(npy_data, combined_data)
-            print(f"\nMatrix has been saved to npy at {npy_data}\n")
 
+        # Collect all remaining items from the queue and append to existing npy data
+        remaining_data = []
+        while not timestamp_queue.empty():
+            remaining_data.append(timestamp_queue.get())
+        if remaining_data:
+            # Load existing data if file exists
+            if os.path.exists(npy_data + ".npy"):
+                existing_data = np.load(npy_data + ".npy", allow_pickle=True)
+                # Ensure existing_data is always a list of records
+                if existing_data.ndim == 1 and isinstance(
+                    existing_data[0], (list, np.ndarray)
+                ):
+                    combined_data = np.concatenate(
+                        [existing_data, remaining_data], axis=0
+                    )
+                else:
+                    combined_data = np.array(
+                        [existing_data] + remaining_data, dtype=object
+                    )
+            else:
+                combined_data = np.array(remaining_data, dtype=object)
+            np.save(npy_data, combined_data)
+        print(f"\nMatrix has been saved to npy at {npy_data}\n")
+        robot_move.running = False
+
+        print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         inputstream_thread.join()
-        if recording_bool == True:
-            print("\n Recording finished \n\nFilename: " + repr(args.filename) + "\n")
         move_thread.join()
         attraction_thread.join()
         repulsion_thread.join()
         parser.exit("KeyboardInterrupt")
+        if "led_controller" in locals():
+            led_controller.stop()

@@ -108,13 +108,14 @@ def update_das(frame):
         4,
         radius,
         45,
-        [500, 3000],
+        [1000, 3000],
         np.linspace(0, 360, 361),
         show=False,
     )
-    print(f"DAS processing time: {time.time() - start_time:.6f} seconds")
+    # print(f"DAS processing time: {time.time() - start_time:.6f} seconds")
 
-    peaks, _ = signal.find_peaks(spatial_resp)
+    peaks, properties = signal.find_peaks(spatial_resp, prominence=0)
+    prominences = properties.get("prominences", np.array([]))
 
     peak_angles = theta[peaks]
     N = 1  # Number of peaks to keep
@@ -124,6 +125,14 @@ def update_das(frame):
     top_n_peak_indices = np.argsort(peak_heights)[-N:]
     top_n_peak_indices = top_n_peak_indices[::-1]
     peak_angles = theta[peaks[top_n_peak_indices]]
+
+    if peaks.size > 0:
+        highest_peak_idx = top_n_peak_indices[0]
+        print(
+            f"Spatial response peak intensity value: {spatial_resp[peaks[highest_peak_idx]]}, dB: {20 * np.log10(np.maximum(spatial_resp[peaks[highest_peak_idx]], np.finfo(float).eps))}, prominence: {prominences[highest_peak_idx]}, at angle: {peak_angles[0]}"
+        )
+    else:
+        print("Spatial response peak intensity values: []")
 
     return peak_angles, spatial_resp
 
@@ -223,7 +232,7 @@ ax2.set_title("Spatial Response (Polar View)", va="bottom", fontsize=20)
 # Standard orientation for DOA: 0° at Top (North), Clockwise
 ax2.set_theta_zero_location("N")
 ax2.set_theta_direction(-1)
-ax2.set_ylim(0, 1.1)  # Assuming normalized response; adjust if necessary
+ax2.set_ylim(0, 1e-7)  # Assuming normalized response; adjust if necessary
 
 
 # Initialize plot objects
@@ -250,11 +259,11 @@ def animate_polar(frame):
 
     global peak_angles, spatial_resp
     peak_angles, spatial_resp = result
-    spatial_resp = (
-        spatial_resp / np.max(spatial_resp)
-        if np.max(spatial_resp) > 0
-        else spatial_resp
-    )
+    # spatial_resp = (
+    #     spatial_resp / np.max(spatial_resp)
+    #     if np.max(spatial_resp) > 0
+    #     else spatial_resp
+    # )
 
     # Define theta (must match the one inside update_das)
     theta_deg = np.linspace(0, 360, 361)
@@ -311,7 +320,7 @@ stream = sd.InputStream(
     device=usb_card_index,
     samplerate=fs,
     channels=channels,
-    blocksize=64,
+    blocksize=160,
     callback=audio_callback,
 )
 

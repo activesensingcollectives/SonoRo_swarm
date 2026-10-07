@@ -10,7 +10,12 @@ email: alberto.doimo@uni-konstanz.de
 
 from thymiodirect import Connection
 from thymiodirect import Thymio
-from shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
+from Scripts.linear_sonoro.shared_queues import (
+    angle_queue,
+    level_queue,
+    angle_queue_led,
+    level_queue_led,
+)
 
 import time
 import random

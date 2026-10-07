@@ -76,7 +76,16 @@ class AudioProcessor:
         self.stack = np.empty((0, self.channels), dtype=np.float32)
         self.max_rows = int(self.block_size * 2)
 
+        self.running = True
         self.buffer = np.zeros((self.block_size, self.channels), dtype=np.float32)
+
+    def stop(self):
+        """Stop audio recording/streaming gracefully."""
+        self.running = False
+        try:
+            self.shared_audio_queue.put_nowait(None)
+        except Exception:
+            pass
 
     def continuos_recording(self):
         """Continuously records audio from the specified sound device and writes it to a file.
@@ -126,8 +135,14 @@ class AudioProcessor:
                 )
                 print(f"Recording started at {timestamp}\n")
                 self.ts_queue.put(timestamp)
-                while True:
-                    file.write(self.shared_audio_queue.get())
+                while self.running:
+                    try:
+                        data = self.shared_audio_queue.get(timeout=0.2)
+                        if data is None:
+                            break
+                        file.write(data)
+                    except queue.Empty:
+                        continue
 
     def input_stream(self):
         """Continuously captures audio from the specified sound device.

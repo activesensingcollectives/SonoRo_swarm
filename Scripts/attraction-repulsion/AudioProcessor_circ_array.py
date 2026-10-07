@@ -8,7 +8,7 @@ email: alberto.doimo@uni-konstanz.de
 
 """
 
-from utilities import *
+import utilities
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
@@ -45,6 +45,7 @@ class AudioProcessor:
         rec_samplerate,
         DOA_freq_range,
         sos,
+        beamformer=None,
     ):
         self.fs = fs
         self.channels = channels
@@ -67,7 +68,7 @@ class AudioProcessor:
         self.rec_samplerate = rec_samplerate
         self.DOA_freq_range = DOA_freq_range
         self.sos = sos
-
+        self.beamformer = beamformer
         self.current_frame = 0
         self.shared_audio_queue = queue.Queue()
         self.ts_queue = queue.Queue()
@@ -76,7 +77,16 @@ class AudioProcessor:
         self.stack = np.empty((0, self.channels), dtype=np.float32)
         self.max_rows = int(self.block_size * 2)
 
+        self.running = True
         self.buffer = np.zeros((self.block_size, self.channels), dtype=np.float32)
+
+    def stop(self):
+        """Stop audio recording/streaming gracefully."""
+        self.running = False
+        try:
+            self.shared_audio_queue.put_nowait(None)
+        except Exception:
+            pass
 
     def continuos_recording(self):
         """Continuously records audio from the specified sound device and writes it to a file.
@@ -126,8 +136,14 @@ class AudioProcessor:
                 )
                 print(f"Recording started at {timestamp}\n")
                 self.ts_queue.put(timestamp)
-                while True:
-                    file.write(self.shared_audio_queue.get())
+                while self.running:
+                    try:
+                        data = self.shared_audio_queue.get(timeout=0.2)
+                        if data is None:
+                            break
+                        file.write(data)
+                    except queue.Empty:
+                        continue
 
     def input_stream(self):
         """Continuously captures audio from the specified sound device.
@@ -368,7 +384,7 @@ class AudioProcessor:
 
         trimmed_signal = in_sig[start_idx:end_idx, :]
 
-        centrefreqs, freqrms = calc_native_freqwise_rms(
+        centrefreqs, freqrms = utilities.calc_native_freqwise_rms(
             trimmed_signal[:, self.ref], self.fs
         )
         freqwise_Parms = freqrms / self.interp_sensitivity
@@ -380,23 +396,40 @@ class AudioProcessor:
         total_rms_freqwise_Parms = np.sqrt(
             np.sum(freqwise_Parms[self.tgtmic_relevant_freqs] ** 2)
         )
-        dB_SPL_level = pascal_to_dbspl(
+        dB_SPL_level = utilities.pascal_to_dbspl(
             total_rms_freqwise_Parms
-        )  # dB SPL level for reference channel
+        )  # dB SPL level for reference channel        # theta, spatial_resp, f_spec_axis, spectrum, bands = higher_order_dmas_UCA(
+        #     trimmed_signal,
+        #     self.fs,
+        #     self.channels - 1,
+        #     self.radius,
+        #     self.shift,
+        #     self.DOA_freq_range,
+        #     theta=self.theta_das,
+        #     show=False,
+        # )
 
         start_time = time.time()
-        theta, spatial_resp, f_spec_axis, spectrum, bands = higher_order_dmas_UCA(
-            trimmed_signal,
-            self.fs,
-            self.channels - 1,
-            self.radius,
-            self.shift,
-            self.DOA_freq_range,
-            theta=self.theta_das,
-            show=False,
+        theta, spatial_resp, f_spec_axis, spectrum, bands = (
+            utilities.higher_order_dmas_UCA(
+                trimmed_signal,
+                self.fs,
+                self.channels - 1,
+                self.radius,
+                self.shift,
+                self.DOA_freq_range,
+                theta=self.theta_das,
+                show=False,
+            )
         )
+
+        # theta, spatial_resp, f_spec_axis, spectrum, bands = (
+        #     self.beamformer.das_filter_UCA_motor_whitened(trimmed_signal, show=False)
+        # )
+
         # print("das time:", time.time() - start_time)
-        peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
+        # peaks, _ = signal.find_peaks(spatial_resp)  # Adjust height as needed
+        peaks = utilities.find_peaks_circular(spatial_resp, wrap=3)
 
         peak_angles = theta[peaks]
         N = self.N_peaks  # Number of peaks to keep

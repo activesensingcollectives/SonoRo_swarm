@@ -937,7 +937,19 @@ def dmas_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False)
 
 
 def higher_order_dmas_UCA(
-    y, fs, nch, r, shift, bw, theta, c=343, wlen=64, order=2, apply_cf=True, show=False
+    y,
+    fs,
+    nch,
+    r,
+    shift,
+    bw,
+    theta,
+    c=343,
+    wlen=16,
+    nfft=256,
+    order=2,
+    apply_cf=True,
+    show=False,
 ):
     """
     Multiband Higher-Order Delay Multiply and Sum (p-DMAS) for a Uniform Circular Array,

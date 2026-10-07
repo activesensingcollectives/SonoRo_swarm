@@ -12,6 +12,9 @@ SonoRo Swarm main file
 This module implements direction-of-arrival (DOA) detection using microphone arrays and
 controls a Thymio robot based on acoustic stimuli.
 
+Uses calibration step to pre-whiten the doa signal and avoid interference from the wheels
+
+
 Features
 --------
 - Direction-of-arrival (DOA) computation using DAS
@@ -52,11 +55,10 @@ import pandas as pd
 import netifaces as ni
 import hydra
 
-from utilities import *
-
-from AudioProcessor_circ_array import AudioProcessor
-from RobotMove_circ import RobotMove
-from shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
+from . import utilities
+from .AudioProcessor_circ_array import AudioProcessor
+from .RobotMove_circ import RobotMove
+from .shared_queues import angle_queue, level_queue, angle_queue_led, level_queue_led
 
 print("imports done")
 
@@ -156,7 +158,7 @@ else:
 
 
 # Get the index of the USB card
-soundcard_index = get_card(sd.query_devices(), "ReSpeaker")
+soundcard_index = utilities.get_card(sd.query_devices(), "ReSpeaker")
 print(sd.query_devices())
 print("soundcard_index=", soundcard_index)
 
@@ -208,6 +210,7 @@ def main(cfg: DictConfig) -> None:
         native_cfg["theta_das_end"],
         native_cfg["theta_das_step"],
     )  # (start, end, step)
+    print("theta_das =", theta_das)
 
     silence_post = (
         native_cfg["duration_out"] * 1000 + 40
@@ -240,7 +243,7 @@ def main(cfg: DictConfig) -> None:
         script_dir, "Null_sensitivity.csv"
     )  # no sensitivity compensation applied for the laptop test
     sensitivity = pd.read_csv(sensitivity_path)
-    print(sensitivity.head())  # Print the first few rows of the sensitivity DataFrame
+    # print(sensitivity.head())  # Print the first few rows of the sensitivity DataFrame
 
     block_size_analyzed_buffer = int(
         native_cfg["analyzed_buffer_time"] * native_cfg["fs"]
@@ -253,30 +256,33 @@ def main(cfg: DictConfig) -> None:
         block_size_analyzed_buffer, dtype=np.float32
     )  # Initialize the buffer for the audio input stream
     print("in_sig shape:", np.shape(in_sig))
-    centrefreqs, freqrms = calc_native_freqwise_rms(in_sig, native_cfg["fs"])
+    centrefreqs, freqrms = utilities.calc_native_freqwise_rms(in_sig, native_cfg["fs"])
 
     freqs = np.array(sensitivity.iloc[:, 0])  # first column contains frequencies
     sens_freqwise_rms = np.array(
         sensitivity.iloc[:, 1]
     )  # Last column contains sensitivity values
 
-    interp_sensitivity = interpolate_freq_response(
+    interp_sensitivity = utilities.interpolate_freq_response(
         [freqs, sens_freqwise_rms], centrefreqs
     )
 
-    print("Interpolated sensitivity values for the center frequencies:")
-    for freq, sens in zip(centrefreqs, interp_sensitivity):
-        print(f"Frequency: {freq:.2f} Hz, Sensitivity: {sens:.4f}")
+    # # print("Interpolated sensitivity values for the center frequencies:")
+    # for freq, sens in zip(centrefreqs, interp_sensitivity):
+    #     print(f"Frequency: {freq:.2f} Hz, Sensitivity: {sens:.4f}")
 
-    frequency_band = [2e3, 20e3]  # min, max frequency to do the compensation Hz
+    frequency_band = [
+        native_cfg["doa_freq_range"][0],
+        native_cfg["doa_freq_range"][1],
+    ]  # min, max frequency to do the compensation Hz
     tgtmic_relevant_freqs = np.logical_and(
         centrefreqs >= frequency_band[0], centrefreqs <= frequency_band[1]
     )
     # Thymio movement parameters
-    speed = perc_to_speed(
+    speed = utilities.perc_to_speed(
         native_cfg["speed_percent"]
     )  # Map 0-100 perc speed to thymio range (0-500)
-    turn_speed = perc_to_speed(native_cfg["turn_speed_percent"])
+    turn_speed = utilities.perc_to_speed(native_cfg["turn_speed_percent"])
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -320,6 +326,95 @@ def main(cfg: DictConfig) -> None:
         args.timestamp_filename = os.path.join(folder_path, name)
 
     # Create instances of the AudioProcessor and RobotMove classes
+
+    robot_move = RobotMove(
+        speed,
+        turn_speed,
+        native_cfg["left_sensor_threshold"],
+        native_cfg["right_sensor_threshold"],
+        native_cfg["critical_level"],
+        native_cfg["trigger_level"],
+        ground_sensors_bool=True,
+    )
+
+    # ========================================================================
+    # NOISE CALIBRATION STEP
+    # Robot spins in place with varying speed while recording gear noise.
+    # After calibration, robot stops and whitening matrices are computed.
+    # ========================================================================
+
+    print("\n" + "=" * 60)
+    print("STARTING NOISE CALIBRATION")
+    print("Robot will rotate in place with varying speed...")
+    print("=" * 60 + "\n")
+
+    calib_duration = native_cfg.get("calib_duration_s", 12.0)  # seconds
+    calib_wlen = native_cfg.get("calib_wlen", 64)
+
+    calib_buffer_list = []
+
+    def _calib_audio_callback(indata, frames, time_info, status):
+        if status:
+            print("Calibration stream status:", status)
+        calib_buffer_list.append(indata.copy())
+
+    def _spin_robot_variable_speed(robot_move_obj, duration, base_turn_speed):
+        start = time.time()
+        while time.time() - start < duration:
+            elapsed = time.time() - start
+            speed_factor = 0.4 + 0.6 * (0.5 * (1 + np.sin(2 * np.pi * elapsed / 4.0)))
+            current_speed = int(base_turn_speed * speed_factor)
+            robot_move_obj.robot["motor.right.target"] = current_speed
+            robot_move_obj.robot["motor.left.target"] = -current_speed
+            time.sleep(0.1)
+        robot_move_obj.stop()
+
+    calib_stream = sd.InputStream(
+        samplerate=native_cfg["fs"],
+        channels=native_cfg["channels"],
+        device=soundcard_index,
+        callback=_calib_audio_callback,
+    )
+
+    with calib_stream:
+        spin_thread = threading.Thread(
+            target=_spin_robot_variable_speed,
+            args=(robot_move, calib_duration, utilities.perc_to_speed(100)),
+        )
+        spin_thread.start()
+        spin_thread.join()
+        time.sleep(0.2)
+
+    robot_move.stop()
+    print("Calibration rotation complete, robot stopped.\n")
+
+    noise_calib_audio = np.concatenate(calib_buffer_list, axis=0)
+    noise_calib_audio_doa = noise_calib_audio[:, 1:5]  # match runtime exactly
+
+    print(f"Calibration audio captured: shape = {noise_calib_audio_doa.shape}")
+
+    beamformer = utilities.WhitenedUCABeamformer(
+        fs=native_cfg["fs"],
+        nch=4,
+        r=native_cfg["radius"],
+        shift=native_cfg["shift"],
+        bw=native_cfg["doa_freq_range"],
+        theta=theta_das,
+        wlen=native_cfg.get("wlen"),
+        nfft=native_cfg.get("nfft"),
+    )
+    beamformer.calibrate(noise_calib_audio_doa)
+
+    beamformer.plot_calibration_diagnostics(save_dir=folder_path, prefix="calib")
+
+    print("=" * 60)
+    print("NOISE CALIBRATION COMPLETE — starting experiment")
+    print("=" * 60 + "\n")
+
+    # ========================================================================
+    # END NOISE CALIBRATION STEP
+    # ========================================================================
+
     audio_processor = AudioProcessor(
         native_cfg["fs"],
         native_cfg["channels"],
@@ -342,16 +437,7 @@ def main(cfg: DictConfig) -> None:
         args.rec_samplerate,
         native_cfg["doa_freq_range"],
         sos,
-    )
-
-    robot_move = RobotMove(
-        speed,
-        turn_speed,
-        native_cfg["left_sensor_threshold"],
-        native_cfg["right_sensor_threshold"],
-        native_cfg["critical_level"],
-        native_cfg["trigger_level"],
-        ground_sensors_bool=True,
+        beamformer=beamformer,
     )
 
     # Create threads for the audio input and recording
@@ -445,7 +531,13 @@ def main(cfg: DictConfig) -> None:
             angle_queue_led.put(angle_temp)
             level_queue_led.put(level_temp)
             if dB_SPL_level[0] >= native_cfg["trigger_level"]:
-                print("\nAngle:", angle_temp, "dB SPL:", level_temp, "\n")
+                print(
+                    "\nAngle:",
+                    angle_temp,
+                    "dB SPL:",
+                    level_temp,
+                    "\n",
+                )
 
             if time.time() - last_resource_report >= 1:
                 # cpu_percent = process.cpu_percent(None)
@@ -462,7 +554,7 @@ def main(cfg: DictConfig) -> None:
                     f"{temperature_c:.1f} C" if temperature_c is not None else "N/A"
                 )
                 throttle_text = get_pi_throttled_status()
-                print(f"CPU: | TEMP: {temperature_text} | THROTTLE: {throttle_text}")
+                # print(f"CPU: | TEMP: {temperature_text} | THROTTLE: {throttle_text}")
                 #     f"CPU: {cpu_percent:.1f}% | FREQ: {cpu_freq_text} | RAM: {ram_mb:.1f} MB ({ram_percent:.1f}%) | TEMP: {temperature_text} | THROTTLE: {throttle_text}"
                 # )
                 last_resource_report = time.time()

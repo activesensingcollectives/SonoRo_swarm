@@ -16,6 +16,7 @@ class SoundLEDController:
         critical_threshold,
         high_intensity=0x1F,
         low_intensity=0x01,
+        angle_shift=-45,
     ):
         # We now track two separate queues
         self.angle_queue = angle_queue
@@ -29,6 +30,7 @@ class SoundLEDController:
         # Cap intensity bounds between 0 (0x00) and 31 (0x1F)
         self.high_intensity = max(0x00, min(high_intensity, 0x1F))
         self.low_intensity = max(0x00, min(low_intensity, 0x1F))
+        self.angle_shift = angle_shift
 
         self.running = False
 
@@ -43,20 +45,13 @@ class SoundLEDController:
 
     def _angle_to_led_index(self, angle):
         """
-        Maps a 0-360 degree angle to a 0-11 LED index.
-        Adding 15 degrees shifts the "capture window" so the LED is centered
-        on its respective 30-degree slice.
-
-        Offset by -1 so that 0 degrees (front) maps to the 12th LED (index 11),
-        30 degrees maps to index 0, 60 degrees to index 1, etc.
+        Maps a 0-360 degree DOA angle to a 0-11 LED index on the ReSpeaker soundcard.
+        - shift = 45: angle 0 -> LED 11
+        - shift = -45: angle 0 -> LED 2
         """
-        # Calculate the standard base index (0 to 11)
-        base_index = int(((angle + 15) % 360) / 30)
-
-        # Shift the index back by 1 and wrap around using modulo 12
-        shifted_index = (base_index - 1) % 12
-
-        return shifted_index
+        base_index = int(((float(angle) + 15) % 360) / 30)
+        slot_offset = int(round(2.0 - (float(self.angle_shift) + 45.0) / 30.0))
+        return (base_index + slot_offset) % 12
 
     def _build_custom_led_array(self, target_led_index, r, g, b):
         """
@@ -78,19 +73,32 @@ class SoundLEDController:
         self.thread.start()
         print("LED Controller started.")
 
+    def set_all_red_min_brightness(self):
+        """Sets all 12 ReSpeaker LEDs to solid red at low brightness (0x01)."""
+        try:
+            self.pixel_ring.set_brightness(self.low_intensity)  # Low brightness (0x01)
+            self.pixel_ring.mono(0xFF0000)
+        except Exception as e:
+            print(f"Error setting ReSpeaker LEDs red: {e}")
+
+    def set_all_red_full_brightness(self):
+        """Alias to set_all_red_min_brightness."""
+        self.set_all_red_min_brightness()
+
     def stop(self):
-        """Stops the controller safely and turns all LEDs off."""
+        """Stops the controller safely and turns all array LEDs red at low brightness."""
         self.running = False
 
         # Send poison pills to unblock BOTH queues
         self.angle_queue.put(None)
         self.level_queue.put(None)
 
-        self.thread.join()
+        if hasattr(self, "thread") and self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
 
-        # Turn everything off once the loop exits
-        self.pixel_ring.off()
-        print("LED Controller stopped. LEDs turned off.")
+        # Turn all LEDs red at low brightness upon stopping
+        self.set_all_red_min_brightness()
+        print("LED Controller stopped. Array LEDs turned red at low brightness.")
 
     def _process_queues(self):
         while self.running:
@@ -105,6 +113,10 @@ class SoundLEDController:
                     level = self.level_queue.get_nowait()
                 except queue.Empty:
                     level = self.level_queue.get(timeout=1)
+
+                # If stop() was called, exit loop immediately without touching LEDs
+                if not self.running:
+                    break
 
                 # Figure out which LED points toward the sound
                 if angle is None or level is None:
