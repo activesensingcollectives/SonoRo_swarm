@@ -899,7 +899,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--start-delay",
         type=float,
-        default=6.0,
+        default=2.0,
         help="Delay in seconds before synchronized swarm start (default: 6.0).",
     )
     parser.add_argument(

@@ -120,16 +120,12 @@ def calc_native_freqwise_rms(X, fs):
         freqwise_rms is the RMS value of each frequency bin.
 
     """
-    time1 = time.time()
     rfft = np.fft.rfft(X)
     fftfreqs = np.fft.rfftfreq(X.size, 1 / fs)
     # now calculate the rms per frequency-band
-    freqwise_rms = []
-
     abs_rfft_squared = np.abs(rfft) ** 2
     mean_sq_freq = abs_rfft_squared / rfft.size
-    rms_freq = np.sqrt(mean_sq_freq / (2 * rfft.size - 1))
-    freqwise_rms = rms_freq.tolist()
+    freqwise_rms = np.sqrt(mean_sq_freq / (2 * rfft.size - 1))
 
     return fftfreqs, freqwise_rms
 
@@ -964,8 +960,157 @@ def dmas_filter_UCA(y, fs, nch, r, shift, bw, theta, c=343, wlen=64, show=False)
     return theta, mag_p, f_spec_axis, spectrum, bands
 
 
+def uca_steering_vectors(fs, nch, r, shift, bw, theta, c=343, wlen=64):
+    """Precompute the UCA steering vectors used by higher_order_dmas_UCA.
+
+    They depend only on the array geometry and the analysis settings, so they can be
+    computed once at start-up instead of on every call.
+
+    Parameters
+    ----------
+    fs : int
+        Sampling rate in Hz.
+    nch : int
+        Number of microphones in the circular array.
+    r : float
+        Radius of the circular array in meters.
+    shift : float
+        Angular offset of the first microphone in degrees.
+    bw : (2,) array-like
+        Min and max frequency (Hz) of the analysed bands.
+    theta : np.ndarray
+        Scanning angles (azimuth) in degrees.
+    c : float, optional
+        Speed of sound in m/s.
+    wlen : int, optional
+        STFT window length (must match the one used in higher_order_dmas_UCA).
+
+    Returns
+    -------
+    band_idxs : np.ndarray
+        Indices of the STFT frequency bins inside bw.
+    bands : np.ndarray
+        Frequencies (Hz) of those bins.
+    a_mat : np.ndarray
+        Steering vectors, shape (nch, n_bands, n_theta).
+
+    """
+    r = float(np.squeeze(r))
+    shift = float(np.squeeze(shift))
+    f_spec_axis = np.fft.rfftfreq(wlen, 1 / fs)  # same bins as stft(nperseg=wlen)
+    band_idxs = np.where((f_spec_axis >= bw[0]) & (f_spec_axis <= bw[1]))[0]
+    if band_idxs.size == 0:
+        raise ValueError(
+            f"No frequency bin inside the DOA range {list(bw)} Hz: with fs={fs} Hz and "
+            f"wlen={wlen} the bins are {fs / wlen:g} Hz apart (0 to {fs / 2:g} Hz). "
+            "Widen the range so it contains at least one bin."
+        )
+    bands = f_spec_axis[band_idxs]
+    theta_rad = np.deg2rad(theta)
+
+    phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + np.deg2rad(shift)
+    mic_x = r * np.cos(phi_n)
+    mic_y = r * np.sin(phi_n)
+
+    # Projection of each mic position on each look direction, shape (nch, n_theta)
+    proj = np.outer(mic_x, np.cos(theta_rad)) + np.outer(mic_y, np.sin(theta_rad))
+    k = 2 * np.pi * bands / c
+    a_mat = np.exp(1j * k[None, :, None] * proj[:, None, :])
+    return band_idxs, bands, a_mat
+
+
+_stft_bins_phases = {}
+
+
+def stft_bins(y, wlen, bins):
+    """STFT of the columns of y for selected frequency bins only.
+
+    Gives the same values as
+    ``scipy.signal.stft(y, window=np.ones(wlen), nperseg=wlen, noverlap=wlen - 1, axis=0)[2][bins]``
+    (rectangular window, hop of 1 sample, zero boundary padding, 1/wlen scaling)
+    for even wlen, but only computes the requested bins, as sliding sums.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Signals, shape (n_samples, n_channels).
+    wlen : int
+        Window length (even).
+    bins : np.ndarray
+        Indices of the frequency bins to compute.
+
+    Returns
+    -------
+    np.ndarray
+        Complex spectrum, shape (n_bins, n_channels, n_samples + 1).
+
+    """
+    if wlen % 2:
+        raise ValueError(f"stft_bins needs an even window length, got wlen={wlen}")
+    half = wlen // 2
+    padded = np.pad(y, ((half, half), (0, 0)))  # boundary="zeros"
+    n_pad = padded.shape[0]
+    key = (n_pad, wlen, tuple(bins))
+    if key not in _stft_bins_phases:
+        # Demodulate each bin to DC, sum over the window, then restore the frame phase
+        _stft_bins_phases[key] = (
+            np.exp(-2j * np.pi * np.outer(bins, np.arange(n_pad)) / wlen)[:, None, :],
+            np.exp(2j * np.pi * np.outer(bins, np.arange(n_pad - wlen + 1)) / wlen)[
+                :, None, :
+            ]
+            / wlen,
+        )
+    phase_in, phase_out = _stft_bins_phases[key]
+    csum = np.cumsum(phase_in * padded.T[None], axis=2)
+    win_sum = csum[:, :, wlen - 1 :].copy()
+    win_sum[:, :, 1:] -= csum[:, :, :-wlen]
+    return win_sum * phase_out
+
+
+class SosFiltFilt:
+    """Zero-phase filter, same as ``scipy.signal.sosfiltfilt(sos, x, axis=0)``.
+
+    The constant set-up (pad length, initial conditions) is computed once instead
+    of on every call, which is most of the cost for short signals.
+    """
+
+    def __init__(self, sos):
+        self.sos = np.asarray(sos, dtype=float)
+        n_sections = self.sos.shape[0]
+        ntaps = 2 * n_sections + 1 - min(
+            (self.sos[:, 2] == 0).sum(), (self.sos[:, 5] == 0).sum()
+        )
+        self.padlen = 3 * ntaps  # scipy's default padding
+        self.zi = signal.sosfilt_zi(self.sos)
+
+    def __call__(self, x):
+        p = self.padlen
+        if x.shape[0] <= p:
+            return signal.sosfiltfilt(self.sos, x, axis=0)
+        # Odd extension at both ends (scipy's padtype="odd")
+        ext = np.concatenate(
+            (2 * x[:1] - x[p:0:-1], x, 2 * x[-1:] - x[-2 : -(p + 2) : -1])
+        )
+        zi = self.zi.reshape(self.zi.shape + (1,) * (x.ndim - 1))
+        y, _ = signal.sosfilt(self.sos, ext, axis=0, zi=zi * ext[:1])
+        y, _ = signal.sosfilt(self.sos, y[::-1], axis=0, zi=zi * y[-1:])
+        return y[::-1][p:-p]
+
+
 def higher_order_dmas_UCA(
-    y, fs, nch, r, shift, bw, theta, c=343, wlen=64, order=2, apply_cf=True, show=False
+    y,
+    fs,
+    nch,
+    r,
+    shift,
+    bw,
+    theta,
+    c=343,
+    wlen=64,
+    order=2,
+    apply_cf=True,
+    show=False,
+    steering=None,
 ):
     """
     Multiband Higher-Order Delay Multiply and Sum (p-DMAS) for a Uniform Circular Array,
@@ -980,103 +1125,90 @@ def higher_order_dmas_UCA(
         The dimensionality order (p). order=2 is standard DMAS. order > 2 is higher-order.
     apply_cf : bool, optional
         Whether to calculate and apply the Standard Coherence Factor (CF). Defaults to True.
+    steering : tuple, optional
+        Output of uca_steering_vectors() for the same fs, nch, r, shift, bw, theta, c
+        and wlen. Pass it to avoid recomputing the steering vectors on every call;
+        then only the analysed frequency bins are computed and the returned
+        `spectrum` is None.
     """
-    # 1. Spectral Decomposition
-    f_spec_axis, _, spectrum = stft(
-        y, fs=fs, window=np.ones((wlen,)), nperseg=wlen, noverlap=wlen - 1, axis=0
-    )
-
-    band_idxs = np.where((f_spec_axis >= bw[0]) & (f_spec_axis <= bw[1]))[0]
-    bands = f_spec_axis[band_idxs]
+    if steering is None:
+        # 1. Spectral Decomposition
+        f_spec_axis, _, spectrum = stft(
+            y, fs=fs, window=np.ones((wlen,)), nperseg=wlen, noverlap=wlen - 1, axis=0
+        )
+        # 2-3. UCA geometry and steering vectors (nch, n_bands, n_theta)
+        steering = uca_steering_vectors(fs, nch, r, shift, bw, theta, c=c, wlen=wlen)
+        band_idxs, bands, a_mat = steering
+        spec = spectrum[band_idxs]
+    else:
+        # 1-3. Only the analysed bins of the spectrum, precomputed steering vectors
+        band_idxs, bands, a_mat = steering
+        f_spec_axis = np.fft.rfftfreq(wlen, 1 / fs)
+        spectrum = None
+        spec = stft_bins(y, wlen, band_idxs)
     theta_rad = np.deg2rad(theta)
 
-    # 2. UCA Geometry Logic
-    shift_rad = np.deg2rad(shift)
-    phi_n = np.linspace(2 * np.pi, 0, nch, endpoint=False) + shift_rad
-
-    mic_x = r * np.cos(phi_n)
-    mic_y = r * np.sin(phi_n)
-
-    # 3. Steering Vector Matrix
-    a_mat = np.zeros((nch, len(bands), len(theta)), dtype=complex)
-
-    for b_idx, f in enumerate(bands):
-        k = 2 * np.pi * f / c
-        for t_idx, t_start in enumerate(theta_rad):
-            phase = k * (mic_x * np.cos(t_start) + mic_y * np.sin(t_start))
-            a_mat[:, b_idx, t_idx] = np.exp(1j * phase)
-
-    a_H_mat = np.conj(a_mat.transpose(1, 2, 0))
-
-    # 4. Spatial Filtering
-    p_total = np.zeros_like(theta, dtype=float)
+    # 4. Spatial Filtering, all bands at once
     num_cross_terms = (nch**2) - nch
+
+    # Covariance per band, same as np.cov(spec, bias=True); shape (n_bands, nch, nch)
+    spec = spec - spec.mean(axis=2, keepdims=True)
+    cov_est = spec @ spec.conj().transpose(0, 2, 1) / spec.shape[2]
+
+    a_bt = a_mat.transpose(1, 0, 2)  # (n_bands, nch, n_theta)
+
+    def _beam_power(cov):
+        # a^H cov a for every band and look direction, shape (n_bands, n_theta)
+        return np.sum(a_bt.conj() * (cov @ a_bt), axis=1)
+
+    # ==========================================
+    # COHERENCE FACTOR (CF) CALCULATION
+    # ==========================================
+    if apply_cf:
+        # Numerator: Coherent Power (Standard DAS output)
+        p_das = np.real(_beam_power(cov_est))
+        # Denominator: Total Incoherent Power (N * sum of auto-powers)
+        incoherent_power = nch * np.real(np.trace(cov_est, axis1=1, axis2=2))
+        # CF Weight (Bounded between 0 and 1)
+        cf = np.clip(p_das / (incoherent_power[:, None] + 1e-12), 0.0, 1.0)
+    else:
+        cf = 1.0  # No CF weighting applied
+
+    # ==========================================
+    # HIGHER ORDER DMAS MODIFICATIONS
+    # ==========================================
+    # 1. Take the p-th root (1/order) of the magnitude, preserve phase
+    abs_cov = np.abs(cov_est)
+    cov_hdmas = np.power(abs_cov, 1.0 / order) * (
+        cov_est / (abs_cov + 1e-12)  # added 1e-12 to avoid div by zero
+    )
+
+    # 2. Remove auto-correlations
+    diag = np.arange(nch)
+    cov_hdmas[:, diag, diag] = 0
+
+    # 3. Compute pseudo-power
+    p_pseudo = _beam_power(cov_hdmas) / num_cross_terms
+
+    # 4. Dimensionality restoration: raise absolute value back to the power of `order`
+    # 5. Apply Coherence Factor
+    p_final = np.abs(p_pseudo) ** order * cf  # (n_bands, n_theta)
+
+    mag_p = p_final.sum(axis=0) / len(bands)
 
     if show:
         fig, ax = plt.subplots()
-
-    for b_idx, f_idx in enumerate(band_idxs):
-        spec = spectrum[f_idx, :, :]
-        cov_est = np.cov(spec, bias=True)
-
-        # ==========================================
-        # COHERENCE FACTOR (CF) CALCULATION
-        # ==========================================
-        if apply_cf:
-            # Numerator: Coherent Power (Standard DAS output)
-            a = a_mat[:, b_idx, :]
-            a_H = a_H_mat[b_idx, :, :]
-            p_das = np.real(np.einsum("ij,jk,ki->i", a_H, cov_est, a))
-
-            # Denominator: Total Incoherent Power (N * sum of auto-powers)
-            incoherent_power = nch * np.real(np.trace(cov_est))
-
-            # CF Weight (Bounded between 0 and 1)
-            cf = p_das / (incoherent_power + 1e-12)
-            cf = np.clip(cf, 0.0, 1.0)
-        else:
-            cf = 1.0  # No CF weighting applied
-
-        # ==========================================
-        # HIGHER ORDER DMAS MODIFICATIONS
-        # ==========================================
-        # 1. Take the p-th root (1/order) of the magnitude, preserve phase
-        cov_hdmas = np.power(np.abs(cov_est), 1.0 / order) * (
-            cov_est / (np.abs(cov_est) + 1e-12)  # added 1e-12 to avoid div by zero
-        )
-
-        # 2. Remove auto-correlations
-        np.fill_diagonal(cov_hdmas, 0)
-
-        a = a_mat[:, b_idx, :]
-        a_H = a_H_mat[b_idx, :, :]
-
-        # 3. Compute pseudo-power
-        p_pseudo = np.einsum("ij,jk,ki->i", a_H, cov_hdmas, a) / num_cross_terms
-
-        # 4. Dimensionality restoration: raise absolute value back to the power of `order`
-        p_restored = np.abs(p_pseudo) ** order
-
-        # 5. Apply Coherence Factor
-        p_final = p_restored * cf
-
-        p_total += p_final
-
-        if show:
-            linestyles = ["-", "--", "-.", ":"]
+        linestyles = ["-", "--", "-.", ":"]
+        for b_idx in range(len(bands)):
             ax.plot(
                 np.rad2deg(theta_rad),
                 10
                 * np.log10(
-                    p_final + 1e-12
+                    p_final[b_idx] + 1e-12
                 ),  # Added log10 back for better dB visualization
                 label=f"{bands[b_idx]:.1f} Hz",
                 linestyle=linestyles[b_idx % len(linestyles)],
             )
-
-    mag_p = p_total / len(bands)
-
-    if show:
         ax.set_title(f"UCA {order}-Order DMAS-CF Pseudospectra")
         ax.plot(
             np.rad2deg(theta_rad),
@@ -1106,6 +1238,27 @@ def perc_to_speed(value):
         v = 0.0
     v = max(0.0, min(100.0, v))
     return int(round((v / 100.0) * 500.0))
+
+
+def degs_to_speed(value, max_deg_s=170):
+    """Angular speed in deg/s -> per-wheel speed offset in [-500, 500]. Keeps the sign
+    (positive = counter-clockwise / left). Clamps input. Returns int."""
+    try:
+        v = float(value)
+    except Exception:
+        v = 0.0
+    v = max(-max_deg_s, min(max_deg_s, v))
+    return int(round((v / max_deg_s) * 500))
+
+
+def speed_to_degs(value, max_deg_s=170):
+    """Inverse of degs_to_speed: motor units [-500, 500] -> deg/s."""
+    try:
+        v = float(value)
+    except Exception:
+        v = 0.0
+    v = max(-500, min(500, v))
+    return (v / 500) * max_deg_s
 
 
 class WhitenedUCABeamformer:

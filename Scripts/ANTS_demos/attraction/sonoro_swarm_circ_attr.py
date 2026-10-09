@@ -320,7 +320,7 @@ def main(cfg: DictConfig) -> None:
             # print(" step 5", time.time() - time40)
             # print("Total loop time: ", time.time() - end_time)
             # add a small random jitter to avoid strict periodic locking
-            wait_time = ICI - (time.time() - end_time) + np.random.uniform(0, 0.05)
+            wait_time = ICI - (time.time() - end_time) + np.random.uniform(0, 0.01)
             print("wait time", wait_time)
             if wait_time > 0:
                 time.sleep(wait_time)
