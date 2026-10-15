@@ -99,8 +99,8 @@ class RobotMove:
     ----------
     running : bool
         Flag indicating if the robot's main loop is running.
-    turning_angle : int
-        Default fixed turning angle in degrees (10 degrees).
+    turn_time : float
+        Duration (s) of an audio-driven turn; the angle is behaviour_angular_speed * turn_time.
     stop_bool : bool
         Flag indicating if robot should stop motion.
     robot : object
@@ -112,7 +112,7 @@ class RobotMove:
         self,
         forward_speed,
         behaviour_angular_speed,
-        turn_angle,
+        turn_time,
         left_sensor_threshold,
         right_sensor_threshold,
         critical_level,
@@ -120,11 +120,11 @@ class RobotMove:
         ground_sensors_bool=True,
         angle_shift=0,
         arena_angular_speed=150,
-        line_avoid_angle=80,
+        line_avoid_time=2.0,
         stuck_speed_threshold=100,
         stuck_time=1.0,
         unstuck_back_time=0.5,
-        unstuck_angle=90,
+        unstuck_turn_time=2.4,
         attraction_angle_range=50,
         repulsion_angle_range=160,
     ):
@@ -140,12 +140,12 @@ class RobotMove:
         self.behaviour_angular_speed_thymio = degs_to_speed(behaviour_angular_speed)
         self.arena_angular_speed = arena_angular_speed
         self.arena_angular_speed_thymio = degs_to_speed(arena_angular_speed)
-        self.line_avoid_angle = line_avoid_angle
+        self.line_avoid_time = line_avoid_time  # s
         self._avoiding_line = False
         self.stuck_speed_threshold = stuck_speed_threshold  # Thymio speed units
         self.stuck_time = stuck_time  # s of sustained mismatch before unsticking
         self.unstuck_back_time = unstuck_back_time  # s
-        self.unstuck_angle = unstuck_angle  # degrees
+        self.unstuck_turn_time = unstuck_turn_time  # s
         self._stuck_since = None
         # Half-widths (deg) around the front (0 deg) in which a sound triggers a turn
         self.attraction_angle_range = attraction_angle_range
@@ -156,7 +156,8 @@ class RobotMove:
         self.loop_period = 0.01
 
         self.running = True
-        self.turning_angle = turn_angle  # degrees
+        # Turns last a fixed time; the angular speed sets how far the robot turns
+        self.turn_time = turn_time  # s
         self.stop_bool = False
 
         print("Initializing Thymio Robot")
@@ -183,37 +184,8 @@ class RobotMove:
             # print("ground.reflected  L R = ", self.robot["prox.ground.reflected"])
             print("\n")
 
-    def angle_to_time(self, angle, angular_speed):
-        """Calculate the time needed to turn the robot by a specified angle based on angular speed (deg/s).
-
-        Parameters
-        ----------
-        angle : float
-            The rotation angle in degrees.
-        angular_speed : float
-            The angular speed in degrees per second.
-
-        Returns
-        -------
-        float
-            The time required to turn by the specified angle, in seconds.
-
-        Notes
-        -----
-        A = 612.33 and B = -0.94 are empirically determined constants.
-
-        """
-        # # calculate the time needed to turn the robot by a certain angle
-        # A = 612.33
-        # B = -0.94
-        # t = A * speed**B
-        # return t * abs(angle) / 360  # time to turn by angle in seconds
-
-        print("time turn", abs(angle) / float(angular_speed))
-        return abs(angle) / float(angular_speed)
-
-    def _turn_speeds(self, arena=False):
-        """Return (angular speed in deg/s, per-wheel Thymio offset) for a turn.
+    def _turn_wheel(self, arena=False):
+        """Return the per-wheel Thymio speed offset for a turn.
 
         Parameters
         ----------
@@ -223,15 +195,15 @@ class RobotMove:
 
         """
         if arena:
-            return self.arena_angular_speed, self.arena_angular_speed_thymio
-        return self.behaviour_angular_speed, self.behaviour_angular_speed_thymio
+            return self.arena_angular_speed_thymio
+        return self.behaviour_angular_speed_thymio
 
     def audio_move_360(self):
         """Execute attraction and repulsion-based movement behaviour for the robot.
         self.robot : object
             Thymio robot instance for motor and sensor control.
-        self.turning_angle : int
-            Fixed turning angle in degrees.
+        self.turn_time : float
+            Duration (s) of each audio-driven turn.
 
         Notes
         -----
@@ -346,15 +318,15 @@ class RobotMove:
                         self.robot["leds.bottom.left"] = [0, 0, 255]
                         self.robot["leds.top"] = [0, 0, 255]
                         if angle >= 360 - self.attraction_angle_range:
-                            # self.rotate_right(360 - self.turning_angle)
-                            self.rotate_left(self.turning_angle)
+                            # self.rotate_right(self.turn_time)
+                            self.rotate_left(self.turn_time)
 
                     else:
                         self.robot["leds.bottom.right"] = [0, 0, 255]
                         self.robot["leds.bottom.left"] = [0, 0, 255]
                         self.robot["leds.top"] = [0, 0, 255]
                         if angle <= self.attraction_angle_range:
-                            self.rotate_right(self.turning_angle)
+                            self.rotate_right(self.turn_time)
 
                 elif (
                     level is not None
@@ -369,15 +341,15 @@ class RobotMove:
                         self.robot["leds.bottom.left"] = [255, 0, 0]
                         self.robot["leds.top"] = [255, 0, 0]
                         if angle >= 360 - self.repulsion_angle_range:
-                            # self.rotate_right(360 - self.turning_angle)
-                            self.rotate_right(self.turning_angle)
+                            # self.rotate_right(self.turn_time)
+                            self.rotate_right(self.turn_time)
 
                     else:
                         self.robot["leds.bottom.right"] = [255, 0, 0]
                         self.robot["leds.bottom.left"] = [255, 0, 0]
                         self.robot["leds.top"] = [255, 0, 0]
                         if angle <= self.repulsion_angle_range:
-                            self.rotate_left(self.turning_angle)
+                            self.rotate_left(self.turn_time)
 
                 else:
                     pass
@@ -428,13 +400,13 @@ class RobotMove:
         self.robot["motor.left.target"] = self.forward_speed
         self.robot["motor.right.target"] = self.forward_speed
 
-    def rotate_right(self, angle, arena=False):
-        """Rotate the robot to the right by a specified angle.
+    def rotate_right(self, duration, arena=False):
+        """Rotate the robot to the right for a specified time.
 
         Parameters
         ----------
-        angle : float
-            The angle in degrees to rotate the robot.
+        duration : float
+            Turn time in seconds; the angle turned is angular speed * duration.
         arena : bool, optional
             If True turn at arena_angular_speed, otherwise at behaviour_angular_speed.
 
@@ -449,8 +421,8 @@ class RobotMove:
 
         """
         if self.robot is not None and self.running:
-            angular_speed, wheel = self._turn_speeds(arena)
-            counter = self.angle_to_time(angle, angular_speed)
+            wheel = self._turn_wheel(arena)
+            counter = duration
             print("angle counter =", counter)
             start_time = time.time()
             while time.time() - start_time < counter:
@@ -477,13 +449,13 @@ class RobotMove:
         else:
             self.stop_motion()
 
-    def rotate_left(self, angle, arena=False):
-        """Rotate the robot to the left by a specified angle.
+    def rotate_left(self, duration, arena=False):
+        """Rotate the robot to the left for a specified time.
 
         Parameters
         ----------
-        angle : float
-            The angle in degrees to rotate the robot.
+        duration : float
+            Turn time in seconds; the angle turned is angular speed * duration.
         arena : bool, optional
             If True turn at arena_angular_speed, otherwise at behaviour_angular_speed.
 
@@ -498,8 +470,8 @@ class RobotMove:
 
         """
         if self.robot is not None and self.running:
-            angular_speed, wheel = self._turn_speeds(arena)
-            counter = self.angle_to_time(angle, angular_speed)
+            wheel = self._turn_wheel(arena)
+            counter = duration
             start_time = time.time()
             while time.time() - start_time < counter:
                 if not self.running or self.check_stop_all_motion():
@@ -525,13 +497,13 @@ class RobotMove:
         else:
             self.stop_motion()
 
-    def smooth_rotate_right(self, angle, arena=False):
-        """Rotate the robot to the right by a specified angle but keeps some forward speed while turning.
+    def smooth_rotate_right(self, duration, arena=False):
+        """Rotate the robot to the right for a specified time but keeps some forward speed while turning.
 
         Parameters
         ----------
-        angle : float
-            The angle in degrees to rotate the robot to the right.
+        duration : float
+            Turn time in seconds; the angle turned is angular speed * duration.
         arena : bool, optional
             If True turn at arena_angular_speed, otherwise at behaviour_angular_speed.
 
@@ -546,8 +518,8 @@ class RobotMove:
 
         """
         if self.robot is not None and self.running:
-            angular_speed, wheel = self._turn_speeds(arena)
-            counter = self.angle_to_time(angle, angular_speed)
+            wheel = self._turn_wheel(arena)
+            counter = duration
             start_time = time.time()
             while time.time() - start_time < counter:
                 if not self.running or self.check_stop_all_motion():
@@ -574,13 +546,13 @@ class RobotMove:
         else:
             self.stop_motion()
 
-    def smooth_rotate_left(self, angle, arena=False):
-        """Rotate the robot to the left by a specified angle but keeps some forward speed while turning.
+    def smooth_rotate_left(self, duration, arena=False):
+        """Rotate the robot to the left for a specified time but keeps some forward speed while turning.
 
         Parameters
         ----------
-        angle : float
-            The angle in degrees to rotate the robot to the right.
+        duration : float
+            Turn time in seconds; the angle turned is angular speed * duration.
         arena : bool, optional
             If True turn at arena_angular_speed, otherwise at behaviour_angular_speed.
 
@@ -595,8 +567,8 @@ class RobotMove:
 
         """
         if self.robot is not None and self.running:
-            angular_speed, wheel = self._turn_speeds(arena)
-            counter = self.angle_to_time(angle, angular_speed)
+            wheel = self._turn_wheel(arena)
+            counter = duration
             start_time = time.time()
             while time.time() - start_time < counter:
                 if not self.running or self.check_stop_all_motion():
@@ -722,15 +694,15 @@ class RobotMove:
         ---------------
         self.unstuck_back_time : float
             Time in seconds to move backward.
-        self.unstuck_angle : float
-            Angle in degrees to turn after backing up.
+        self.unstuck_turn_time : float
+            Time in seconds to turn after backing up.
 
         """
         if self.robot is None or not self.running:
             return
         print("[Stuck] Wheel speeds not matching targets, disentangling")
         self.move_back(self.unstuck_back_time)
-        self.random_turn(self.unstuck_angle, arena=True)
+        self.random_turn(self.unstuck_turn_time, arena=True)
         self._stuck_since = None
         # Discard audio received while stuck
         clear_queue(angle_queue)
@@ -756,7 +728,7 @@ class RobotMove:
         except Exception:
             return False
 
-    def avoid_line(self, angle=None):
+    def avoid_line(self, duration=None):
         """Avoid line detection and response.
 
         If both ground sensors detect a line, the robot performs a random turn.
@@ -765,8 +737,8 @@ class RobotMove:
 
         Parameters
         ----------
-        angle : float, optional
-            The angle in degrees to turn for line avoidance (defaults to self.line_avoid_angle or 80).
+        duration : float, optional
+            Turn time in seconds for line avoidance (defaults to self.line_avoid_time).
 
         Returns
         -------
@@ -788,8 +760,8 @@ class RobotMove:
         if not self.running or self.robot is None:
             return False
 
-        if angle is None:
-            angle = getattr(self, "line_avoid_angle", 80)
+        if duration is None:
+            duration = self.line_avoid_time
 
         line_detected = False
         self._avoiding_line = True
@@ -804,12 +776,12 @@ class RobotMove:
                     if self.check_stop_all_motion():
                         self.stop_motion()
                         return True
-                    self.random_turn(angle, arena=True)
+                    self.random_turn(duration, arena=True)
 
                 elif left_on_line:
                     line_detected = True
-                    # Left sensor detects line -> turn right by specified angle (80 deg)
-                    counter = self.angle_to_time(angle, self.arena_angular_speed)
+                    # Left sensor detects line -> turn right for the line avoidance time
+                    counter = duration
                     start_time = time.time()
                     while time.time() - start_time < counter:
                         if not self.running or self.check_stop_all_motion():
@@ -835,8 +807,8 @@ class RobotMove:
 
                 elif right_on_line:
                     line_detected = True
-                    # Right sensor detects line -> turn left by specified angle (80 deg)
-                    counter = self.angle_to_time(angle, self.arena_angular_speed)
+                    # Right sensor detects line -> turn left for the line avoidance time
+                    counter = duration
                     start_time = time.time()
                     while time.time() - start_time < counter:
                         if not self.running or self.check_stop_all_motion():
@@ -913,13 +885,13 @@ class RobotMove:
 
         time.sleep(0.3)  # Give thymiodirect time to send the commands over serial
 
-    def random_turn(self, angle, arena=False):
+    def random_turn(self, duration, arena=False):
         """Perform a random movement of the robot in a random direction.
 
         Parameters
         ----------
-        angle : float
-            The rotation angle in degrees
+        duration : float
+            Turn time in seconds
         arena : bool, optional
             If True turn at arena_angular_speed, otherwise at behaviour_angular_speed.
 
@@ -937,6 +909,6 @@ class RobotMove:
             self.stop_motion()
             return
         if bool(random.getrandbits(1)):
-            self.rotate_right(angle, arena)
+            self.rotate_right(duration, arena)
         else:
-            self.rotate_left(angle, arena)
+            self.rotate_left(duration, arena)

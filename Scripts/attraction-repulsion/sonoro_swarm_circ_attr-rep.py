@@ -344,7 +344,7 @@ def main(cfg: DictConfig) -> None:
     robot_move = RobotMove(
         speed,
         cfg.behaviour_angular_speed,
-        cfg.turn_angle,
+        cfg.turn_time,
         cfg.left_sensor_threshold,
         cfg.right_sensor_threshold,
         cfg.critical_level,
@@ -352,11 +352,11 @@ def main(cfg: DictConfig) -> None:
         ground_sensors_bool=True,
         angle_shift=cfg.get("shift", -45),
         arena_angular_speed=cfg.arena_angular_speed,
-        line_avoid_angle=cfg.get("line_avoid_angle", 80),
+        line_avoid_time=cfg.get("line_avoid_time", 2.0),
         stuck_speed_threshold=cfg.get("stuck_speed_ratio", 0.7) * speed,
         stuck_time=cfg.get("stuck_time", 1.0),
         unstuck_back_time=cfg.get("unstuck_back_time", 0.5),
-        unstuck_angle=cfg.get("unstuck_angle", 90),
+        unstuck_turn_time=cfg.get("unstuck_turn_time", 2.4),
         attraction_angle_range=cfg.get("attraction_angle_range", 50),
         repulsion_angle_range=cfg.get("repulsion_angle_range", 160),
     )
